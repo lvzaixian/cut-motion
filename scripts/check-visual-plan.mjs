@@ -246,7 +246,6 @@ for (let index = 0; index < beats.length; index += 1) {
 const aAxisMotionBeats = beats.filter((beat) => beat.axis === "A" && !(captionMode === "subtitles" && beat.mgScope === "none"));
 for (const [index, beat] of aAxisMotionBeats.entries()) {
   const renderWindow = renderWindows.get(beat.id) ?? { start: beat.start, end: beat.end };
-  if (beat.layout?.faceCover !== "none" && renderWindow.end - renderWindow.start > 3) errors.push(`${beat.id}: A-axis face coverage exceeds three seconds`);
   const previousWindow = index > 0
     ? renderWindows.get(aAxisMotionBeats[index - 1].id) ?? {
       start: aAxisMotionBeats[index - 1].start,

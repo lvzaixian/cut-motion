@@ -38,6 +38,25 @@ try {
   script("check-visual-plan.mjs", [validMotion, transcript, design]);
   script("check-visual-plan.mjs", [validSubtitles, transcript, design]);
 
+  const longIntentionalFaceCover = readJson(validMotion);
+  longIntentionalFaceCover.beats = [{
+    ...longIntentionalFaceCover.beats[0],
+    sourceSegmentIds: ["seg-001", "seg-002"],
+    text: "看看这些特效看看这些动画",
+    start: 0,
+    end: 3.2,
+    audioAnchorTime: 0,
+    axis: "A",
+    entryAnchorWordId: "seg-001:word-001",
+    exitAnchorWordId: "seg-002:word-003",
+    exitAnchorOffsetFrames: 0,
+    layout: { ...longIntentionalFaceCover.beats[0].layout, faceCover: "intentional" },
+    staticHoldReason: "The evidence needs a continuous reading hold."
+  }];
+  const longIntentionalFaceCoverPath = path.join(temporaryRoot, "long-intentional-face-cover.json");
+  writeJson(longIntentionalFaceCoverPath, longIntentionalFaceCover);
+  script("check-visual-plan.mjs", [longIntentionalFaceCoverPath, transcript, design]);
+
   const mutationCases = [
     {
       name: "duplicate-caption-copy",

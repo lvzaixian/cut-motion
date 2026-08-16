@@ -142,7 +142,6 @@
         for (const group of visibleGroups) {
           const start = Number(group.dataset.groupStart);
           const duration = Number(group.dataset.groupDuration);
-          if (group.dataset.axis === "A" && group.dataset.faceCover !== "none" && duration > 3) throw new Error("motion_contract_face_cover_duration");
           if (currentTime !== null && (currentTime < start - 1 / 30 || currentTime > start + duration + 1 / 30)) {
             throw new Error("motion_contract_group_lifetime");
           }
