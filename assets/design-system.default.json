@@ -93,8 +93,8 @@
       "maximumAuxiliaryGroups": 1,
       "preferredGroupDurationSeconds": [1.8, 3.0],
       "clearBeforeNextGroup": true,
-      "overlayZones": ["top", "bottom", "side"],
-      "faceCoverPolicy": "brief-semantic-only",
+      "overlayZones": ["center", "side"],
+      "faceCoverPolicy": "viewer-cognition-first",
       "surface": {
         "kind": "localized-glass",
         "opacityRange": [0.58, 0.76],

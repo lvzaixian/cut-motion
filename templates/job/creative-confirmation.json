@@ -42,8 +42,8 @@
   "axisPolicy": {
     "A": {
       "accumulation": "replace",
-      "overlayZones": ["top", "bottom", "side"],
-      "faceProtection": "brief-semantic-only",
+      "overlayZones": ["center", "side"],
+      "faceProtection": "viewer-cognition-first",
       "surface": {
         "kind": "localized-glass",
         "fullFrame": false,

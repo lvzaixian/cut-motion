@@ -64,6 +64,7 @@ node "$repository_root/scripts/test-render-core.mjs"
 node "$repository_root/scripts/test-validation-receipts.mjs"
 node "$repository_root/scripts/test-planning-contracts.mjs"
 node "$repository_root/scripts/test-workflow-contracts.mjs"
+node "$repository_root/scripts/test-approve-creative.mjs"
 bash "$repository_root/scripts/test-media-pipeline.sh" --static
 
 if [[ "$mode" == "--runtime" ]]; then
