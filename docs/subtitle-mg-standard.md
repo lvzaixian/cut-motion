@@ -94,7 +94,7 @@ Do not introduce a technical term, formula, or benchmark that creates more unans
 - Treat MG as punctuation, not a continuous layer. In a typical subtitle-mode talking-head video, most runtime should remain talking head plus captions.
 - One MG passage performs one cognitive job.
 - In A-axis overlay mode, use replacement cadence: a local information group normally remains for 1.8–3.0 seconds, exits completely, and is then replaced. Do not retain earlier cards while a later idea arrives.
-- Prefer a face-safe zone. A meaningful group may briefly cover the face for up to about three seconds, but never accumulates with the next group.
+- Place A-axis MG in the viewer's most legible feed-scale focal position for the current question; do not push core information to the top or bottom merely to preserve the face. The speaker is a trust and connection carrier, not a default protected zone. Intentional face coverage is allowed when it improves current semantic understanding and does not cover captions, PiP, evidence, protected or necessary UI, or platform chrome; inspect entrance, peak, hold, and exit at real feed scale, and retain one dominant focal group.
 - Declare one horizontal or vertical primary flow. Do not turn the main chain 90 degrees; branch on the secondary axis only at a terminal node.
 - Reuse the approved visual reference for copy, timing, or size-only changes.
 - Repeating a complete visual signature requires an explicit reuse group and semantic reason.
@@ -134,5 +134,6 @@ Every proposed MG must pass:
 - a fixed-cadence pattern interrupt with no semantic purpose;
 - A-axis information groups accumulated into a page instead of being replaced;
 - a transient graphic whose resolved meaning never remains visible;
-- any overlap with captions, PiP, evidence, or protected UI, or prolonged/accumulated face coverage;
+- any overlap with captions, PiP, evidence, protected UI, or platform chrome;
+- face coverage without current semantic value or without one dominant focal group;
 - an MG that cannot state a concrete `removalLoss`.

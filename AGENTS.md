@@ -120,7 +120,7 @@ For `subtitles` mode:
 - when a reference script is supplied, persist its immutable job-local copy and use its recording-confirmed wording for release; use ChatCut/ASR output for timing and alignment, not released wording. Without a reference script, use the reconciled recording-backed transcript as wording authority;
 - retain `captions/chatcut-pages.json` as raw timing evidence, but do not preserve its `/` pagination blindly. Build `captions/caption-review-plan.json` by aligning the approved wording to word timestamps and authoring semantic one-line groups;
 - run `scripts/check-caption-review-plan.mjs` when preparing or explicitly auditing the plan. Promote the settled wording/timing plan to `captions/captions.json`, then run `scripts/check-captions.mjs` and `scripts/install-captions.mjs <captions> <composition> <design-system>` when captions are installed;
-- build released captions in HyperFrames. Add MG only at selected semantic nodes after the caption baseline is viable. Never cover captions, PiP, product evidence, or protected UI; face coverage follows the brief-semantic-only A-axis rule below. Global MG is forbidden in `subtitles` mode.
+- build released captions in HyperFrames. Add MG only at selected semantic nodes after the caption baseline is viable. Never cover captions, PiP, product evidence, protected UI, or platform chrome. The speaker is not a default protected zone: intentional face coverage is allowed only when it improves the current semantic understanding. Global MG is forbidden in `subtitles` mode.
 - default to A-axis overlays in `subtitles` mode: keep the talking-head video full-frame beneath localized MG. A B-axis stage is a recorded motion-plan preference, not a new workflow gate.
 
 ## Visual axis modes
@@ -184,7 +184,7 @@ ChatCut is used only to create the editable rough cut. If it is unavailable, rec
 8. Promote the approved export with `scripts/promote-job-media.mjs <job> roughcut <export> --consume-source` before advancing `rough-cut-export`. It atomically replaces `roughcut/a-roll.mp4` and refreshes the HyperFrames input through a hard link when possible.
 9. For `subtitles`, retain any ChatCut timing output only as raw alignment evidence; released captions are authored and installed in HyperFrames. Released wording comes from the persisted reference script when supplied, otherwise from the reconciled recording transcript.
 
-The shared baseline for both caption modes is: protected regions take precedence over decoration; protect the face, PiP, product evidence, UI, and any active caption; check text wrapping, entrance/peak/hold/exit bounds, and audio continuity before adding decorative motion. Caption mode changes only how speech is represented and how much motion is appropriate, not the rough-cut, source-lock, safe-area, or HyperFrames validation discipline.
+The shared baseline for both caption modes is: protected regions take precedence over decoration; protect any active caption, PiP, product evidence, protected or necessary UI, and platform chrome. The speaker is a trust and connection carrier, not a default protected zone: place MG for the viewer's current cognitive need and feed-scale visibility, not mechanically at the top or bottom to avoid the face. Intentional face coverage is allowed only when it improves the current semantic understanding and preserves one dominant focal group. Check text wrapping, entrance/peak/hold/exit bounds at real feed scale, and audio continuity before adding decorative motion. Caption mode changes only how speech is represented and how much motion is appropriate, not the rough-cut, source-lock, safe-area, or HyperFrames validation discipline.
 
 If ChatCut is unavailable, record `roughCutEngine: "ffmpeg-fallback"` and perform only conservative silence and false-start removal. Never pretend the ChatCut stage ran.
 
@@ -223,7 +223,7 @@ Every spoken sentence must be represented. Split long sentences into meaningful 
 - supporting components;
 - entrance, hold, and exit timing;
 - measured typography and layout bounds;
-- collision, face-cover, and safe-area notes.
+- collision, intentional face-cover rationale, viewer-visible focal placement, and safe-area notes.
 
 Run `scripts/check-visual-plan.mjs` while preparing a motion-bearing plan or when `auto` validation is enabled. This check does not add a workflow gate.
 
@@ -233,7 +233,7 @@ If `state/reference-script-annotations.json` contains visual notes, bind each no
 
 Any later change to caption segmentation, the MG node set or count, on-screen copy, support role, visual style, or axis mode is a plan change. Use `replan` to return to `motion-plan` and regenerate the package. Only parameter-only corrections that preserve the selected nodes, copy, meaning, style family, and axis—such as a small position, size, or easing adjustment—may return directly to implementation.
 
-In `motion-copy` mode, do not add a separate subtitle band; spoken wording appears inside the designed effects. In `subtitles` mode, the ChatCut-derived caption file carries complete transcript coverage and the beat map contains only supplemental visuals. The first subtitle-mode deliverable is caption-only; continue into local MG only where the creative confirmation package identifies a semantic node and a protected-region-safe placement. English may support Chinese copy, but cannot replace essential Chinese meaning.
+In `motion-copy` mode, do not add a separate subtitle band; spoken wording appears inside the designed effects. In `subtitles` mode, the ChatCut-derived caption file carries complete transcript coverage and the beat map contains only supplemental visuals. The first subtitle-mode deliverable is caption-only; continue into local MG only where the creative confirmation package identifies a semantic node and a viewer-first placement that preserves captions, PiP, evidence, protected UI, and platform chrome. English may support Chinese copy, but cannot replace essential Chinese meaning.
 
 Every subtitle-mode local MG must close one documented viewer cognition gap and follow `docs/subtitle-mg-standard.md`. Record its viewer question, support role, concrete removal loss, visual encoding, still-frame value, attention cost, factual-claim sources, and plain-language term explanations in `state/beat-map.json`. New information without sufficient editorial value is not a reason to add MG.
 
@@ -259,8 +259,8 @@ For `subtitles`, preserve ChatCut timing pages only as evidence, align the settl
 - The A-axis is the talking-head footage with designed effects layered over it.
 - A-axis effects use replacement, not accumulation: one primary information group and at most one auxiliary group may remain visible. The prior group exits before the next group enters.
 - Inside an approved subtitles-mode A-axis MG passage, prefer 1.8–3.0 second information groups. Caption-only passages have no MG cadence requirement.
-- Prefer one face-safe A-axis zone. Informative MG may briefly cover the face for up to about three seconds, but the previous group must exit first and groups may not accumulate.
-- Anchor portrait A-axis MG in the upper-middle region and let it expand downward when needed; do not place the default focal group directly at frame center. For landscape A-axis MG, prefer the upper-left or upper-right region according to face and evidence placement.
+- Place A-axis MG in the viewer's most legible feed-scale focal position for the current semantic task; do not push core information to the top or bottom merely to preserve the face.
+- The speaker is a trust and connection carrier, not a default protected zone. Intentional face coverage is allowed when it improves current semantic understanding and does not cover captions, PiP, evidence, protected or necessary UI, or platform chrome. Inspect entrance, peak, hold, and exit at real feed scale, and retain one dominant focal group.
 - A-axis surfaces may use localized semi-transparent glass with a restrained blur and the existing typography, borders, shadows, palette and easing. Full-frame glass, haze, or blur is forbidden.
 - Every MG declares a horizontal or vertical primary flow. The main chain cannot turn 90 degrees; a secondary-axis branch is allowed only from a terminal node.
 - Reuse the visual reference or component named by `visualReference` when only copy, timing, or size changes. A changed primary flow, hierarchy, or animation grammar is a new visual plan.
@@ -269,7 +269,7 @@ For `subtitles`, preserve ChatCut timing pages only as evidence, align the settl
 - The B-axis PIP exclusion zone is fixed by `design-system.json`; no non-PIP component may overlap it at entrance, peak, hold, or exit. Reserve the zone in CSS before adding lower-third content.
 - Use B-axis only when a phrase benefits from a full visual stage. Do not switch axes merely to create activity.
 - Avoid rapid A/B/A/B alternation. One coherent B-axis passage is usually stronger than many short cuts.
-- The effect may cover the face when the effect is the subject, but it must remain intentional and compositionally balanced.
+- The effect may intentionally cover the face when it makes the current meaning clearer; at real feed scale, keep it compositionally balanced, preserve the protected-region exclusions, and retain one dominant focal group.
 
 ### 8. Timing and density
 

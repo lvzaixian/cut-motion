@@ -64,6 +64,9 @@ Do not reduce primary copy below these ranges to rescue a bad layout. Recompose 
 - Keep primary copy away from the extreme top edge; the top strip is reserved for small metadata and status marks.
 - Maintain at least 54 px side clearance and 88 px top and bottom clearance.
 - Place the main focal group between 22% and 78% of frame height unless an intentional off-canvas move is documented.
+- Place the current semantic group in the most legible feed-scale focal position; do not move core content to the top or bottom simply to preserve the face.
+- The speaker is a trust and connection carrier, not a default protected zone. Intentional face coverage is valid only when it improves current semantic understanding and leaves captions, PiP, evidence, protected or necessary UI, and platform chrome unobstructed.
+- Inspect entrance, peak, hold, and exit at real feed scale, and preserve one dominant focal group.
 - Test the bounding box at maximum GSAP overshoot, rotation, outline, and shadow—not only at the resting frame.
 - When text accumulates, preserve a stable anchor and expand into available space. Do not compress previous clauses into unreadable corners.
 - When a layout becomes crowded, remove decoration or redesign grouping before reducing text size.
