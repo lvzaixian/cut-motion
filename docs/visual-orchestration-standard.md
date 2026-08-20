@@ -142,7 +142,7 @@ rough-cut-export → motion-plan → visual-arrangement-review → composition �
 
 ### 5.1 必须记录的 cue
 
-每个视觉对象记录以下字段，并由构建器传给模块实际使用：
+每个采用 `thoughtful-editorial-v1` 的视觉对象记录以下字段，并由构建器传给模块实际使用：
 
 ```json
 {
@@ -170,12 +170,12 @@ rough-cut-export → motion-plan → visual-arrangement-review → composition �
 
 计划中的 cue 不能只写在 JSON：
 
-1. 构建器把当前 Beat 的命名 cue 注入模块；模块只能通过命名 cue 排定内容性动作，不能再以 `beat.start + 常数` 作为内容时序；
-2. 模块只控制子对象，根节点的显示与最终退出由构建器统一控制；模块自行提前淡出根节点是阻断错误；
+1. 构建器把当前 Beat 的命名 cue 注入一个受控 `motion` 调度器；模块只能以 `motion.set()` / `motion.to()` 和 cue ID 排定内容性动作，不能再以 `beat.start + 常数` 作为内容时序；
+2. 模块只控制带 `data-cue-id` 的子对象，根节点的显示与最终退出由构建器统一控制；模块自行提前淡出根节点是阻断错误；
 3. 构建与校验必须证明：每个声明 cue 都在实际时间线被使用，实际退出未早于声明对象的 `invisibleFrame`，且不存在未声明的内容性时间点；
 4. 抽帧点从实际 cue 取得：入场、首次可读、落定/停留、退出。仅从 Beat 大窗口抽样不构成验证。
 
-这里不引入通用 JavaScript 解析器。最小实现是由构建器提供 `at("cue-id")` 的命名时刻辅助函数，静态拒绝模块中内容性 `beat.start + 常数` 和根节点淡出；再用小型真实回归覆盖提前淡出、错词触发与漏用 cue。
+这里不引入通用 JavaScript 解析器。最小实现是由构建器提供 `at("cue-id", "phase")` 与受控 `motion` 调度器，静态拒绝新 profile 模块中裸露的 `timeline`、`root` 和 `beat` 调度；再用小型真实回归覆盖提前淡出、错词触发与漏用 cue。未声明该 profile 的历史模块继续按旧契约重建。
 
 ## 6. 口播的编辑型动效语法
 
@@ -244,12 +244,12 @@ rough-cut-export → motion-plan → visual-arrangement-review → composition �
 
 ## 8. 封面静帧数量
 
-新的 `talking-head-opinion-poster-v2` Intake 包必须提供**恰好 24 张**来自未剪原片的原始静帧供用户挑选。用户仍只从其中选一张，随后生成**恰好 6 张**完整正式封面图；底图、裁切和固定视觉语法不变。
+新的 `talking-head-opinion-poster-v2` **2.1.0** Intake 包必须提供**恰好 24 张**来自未剪原片的原始静帧供用户挑选。用户仍只从其中选一张，随后生成**恰好 6 张**完整正式封面图；底图、裁切和固定视觉语法不变。
 
 兼容规则：
 
-- 历史 V1 封面包继续要求 8 张，避免已完成任务失效；
-- V2 的运行时检查器、Schema、脚手架、现行文档、工作区协议与测试夹具全部以 24 为准；
+- 历史 V1 与已存在的 V2.0 封面包继续要求 8 张，避免已完成任务失效；
+- 新建 V2.1 的运行时检查器、Schema、脚手架、现行文档、工作区协议与测试夹具全部以 24 为准；
 - 24 不是“至少 24”：23、25 或混入剪后帧都应被拒绝；
 - 正式封面候选数仍是 6，不随选帧数量变化。
 
@@ -262,7 +262,7 @@ rough-cut-export → motion-plan → visual-arrangement-review → composition �
 3. Beat Map 与构建器拥有同一套命名对象 cue；模块无法提前淡出根节点，实际 GSAP 排程可由 cue 审核；
 4. 为素材路径/哈希/隐私/事实边界/展示窗口添加最小结构校验；
 5. 为暗色大背板、透明度/面积越界、错词触发、长停留和模块提前退出添加可重复的回归；
-6. `talking-head-opinion-poster-v2` 的 24 张静帧契约在 checker、Schema、模板、文档和测试中一致，V1 的 8 张兼容保持有效；
+6. 新建 `talking-head-opinion-poster-v2` 2.1.0 的 24 张静帧契约在 checker、Schema、模板、文档和测试中一致，历史 V1/V2.0 的 8 张兼容保持有效；
 7. 至少用 `b01`、`b09`、`b20` 这三种已有失败形态建立回归：提前根节点退出、对象早于口播词出现、计划末端仍有内容却已消失。
 
 ## 10. 设计依据
