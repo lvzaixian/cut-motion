@@ -12,6 +12,8 @@ On resume, inspect the active workflow state and use [the phase router](docs/wor
 
 ## Existing local transcription — check this first
 
+**New productions default to unscripted recordings. Complete local transcription of every source recording and pickup, read the full transcript, reconcile known wording doubts, and write the whole-content analysis before arranging covers, clip selection, rough cutting, captions or motion.** Do not request a script as a prerequisite or plan from a filename, excerpt or assumed script. Only immutable intake, inventory, media probing and environment checks precede this work. If local ASR fails, report the concrete blocker and hold downstream planning until it is restored; use another engine only when the user explicitly chooses it for this job and record the deviation. A supplied reference script never replaces full transcription and analysis.
+
 **This Mac already has a reusable local `mlx-whisper` environment and Whisper large-v3 model.** Before declaring transcription unavailable or proposing an installation, read the first section of `docs/agent-setup.md` and check its absolute CLI/model paths, Metal and FFmpeg. The package is `mlx-whisper`; the executable is `mlx_whisper` inside a separate virtual environment. A missing command on PATH, a missing package in the default Python, or disconnected ChatCut is not evidence that this local tool is unavailable. When the user has not chosen an engine and the local checks pass, reuse it offline without reinstalling or downloading; keep new inputs, raw results and logs in the current job. Verify again on other hosts; do not assume this Mac's paths exist there.
 
 ## Minimum input
@@ -77,9 +79,9 @@ Each job directory is an isolated working directory. Do not place job media, gen
 
 ## Toolchain
 
-Use the first available tool in each stage:
+Use the designated tool for each stage:
 
-1. **Transcription and content analysis:** transcribe the full recording with ChatCut or the existing local mlx-whisper runtime documented in `docs/agent-setup.md`, reconcile against audio and an optional reference script, then map the narrative and repeated takes before cover copy or cutting. ASR does not replace the recording as authority.
+1. **Transcription and content analysis:** first transcribe every full source recording and pickup with the existing local mlx-whisper runtime documented in `docs/agent-setup.md`, then reconcile against audio and an optional reference script and map the whole narrative and repeated takes before any downstream planning. ChatCut is not the default first-pass ASR provider. ASR does not replace the recording as authority.
 2. **Rough cut:** ChatCut project and editable timeline, using the analyzed narrative and latest complete repeated takes.
 3. **Precision trim:** FFmpeg and FFprobe.
 4. **Motion design:** HyperFrames HTML/CSS with a single seek-safe GSAP timeline.
@@ -194,12 +196,12 @@ ChatCut is used only to create the editable rough cut. If it is unavailable, rec
 2. Copy or link the source into `input/`; never modify it.
 3. Probe duration, dimensions, frame rate, codecs, sample rate, and rotation with FFprobe.
 4. Preserve the uncut source for the later cover checkpoint. Enter transcription without waiting for a cover; write cover copy only after understanding the actual content.
-5. Ask once for optional caption, reference-script, and visual-axis preferences. Record supplied choices; otherwise keep them deferred and continue.
+5. Ask once for optional caption and visual-axis preferences. Default to no script; preserve a reference script if supplied without requesting one as a prerequisite. Record supplied choices; otherwise keep them deferred and continue.
 6. Normalize the project timeline to the source frame rate unless the user specifies another rate, then save the resolved inputs and defaults.
 
 ### 2. Transcript, content analysis, and cover
 
-1. Transcribe the entire recording before cutting, including videos with a reference script. Use ChatCut or the already installed local mlx-whisper runtime in `docs/agent-setup.md`; retain raw ASR output separately from the reconciled transcript and release captions.
+1. Treat new videos as unscripted by default. Transcribe every full source recording and pickup with the already installed local mlx-whisper runtime in `docs/agent-setup.md` before downstream planning, including videos with a reference script; retain raw ASR output separately from the reconciled transcript and release captions.
 2. If a reference script is supplied, persist the immutable original under `input/reference-scripts/` and record its SHA-256 in `state/workflow.json` and `state/reference-script-annotations.json`. Reconcile its wording with the recording: remove unspoken text, restore spoken omissions, and use the confirmed script wording for release.
 3. When the reference contains `【】`, use only `speechText` from `state/reference-script-annotations.json` for released wording and retain every visual note separately.
 4. Store timestamps in `state/transcript.json` and evidence in `state/transcript-reconciliation.json`; run the reconciliation checker.

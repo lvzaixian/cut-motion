@@ -2,6 +2,8 @@
 
 Each job owns its source, state, previews, logs, and output under `jobs/<job-id>/`. Never overwrite the source or place generated media in the repository root.
 
+New videos default to unscripted. After immutable intake and media/runtime checks, use the existing local mlx-whisper tool to transcribe every complete source recording and pickup, validate the raw results, read the whole transcript and complete `docs/content-analysis.md` before cover preparation, clip selection, rough cutting or visual planning. Do not wait for a script or infer the episode from excerpts. Local-ASR failures block downstream planning until resolved; another engine requires the user's explicit job-specific choice. This ordering adds no approval gate and never replaces recording-backed wording review.
+
 ## Active-state route
 
 On resume, run `workflow-state.mjs ... status` and load guidance for the active state. New productions still read every required intake standard. Do not repeat completed transcription, upload, export or analysis merely because a conversation resumed.
@@ -22,7 +24,7 @@ On resume, run `workflow-state.mjs ... status` and load guidance for the active 
 | State | Contract |
 | --- | --- |
 | `intake` | Validate immutable source media and record deferred preferences; do not wait for cover approval. |
-| `transcription` | Transcribe the full recording, reconcile wording, analyze narrative and repeated takes in `docs/content-analysis.md`, then approve the content-grounded cover and lock source word timings. |
+| `transcription` | Complete local ASR for all source recordings and pickups, reconcile wording, read and analyze the whole narrative and repeated takes in `docs/content-analysis.md`, then prepare and approve the content-grounded cover and lock source word timings. |
 | `rough-cut` | Build the analyzed narrative in ChatCut using the last complete take in each retry group; preserve required setup and record the editable project/timeline. |
 | `rough-cut-review` | User approves, revises, or explicitly chooses `fallback-auto`. |
 | `rough-cut-export` | Export the approved rough cut and perform the basic media lock; `fallback-auto` also runs the trim audit. |
@@ -48,7 +50,7 @@ Only after the user explicitly selects `auto`, it follows the same state route, 
 
 ## Wording and visual axis
 
-The recording remains authoritative for spoken content. A supplied reference script is preserved and reconciled; it can provide release wording only where the recording supports it. ChatCut or the existing local mlx-whisper runtime supplies draft text and timing evidence; see `docs/agent-setup.md` for verified host paths and use. Complete the content analysis before editing even when a reference script exists. Follow `docs/talking-head-trim-standard.md` for latest-take selection and context-preserving cuts.
+The recording remains authoritative for spoken content. A supplied reference script is preserved and reconciled; it can provide release wording only where the recording supports it. The existing local mlx-whisper runtime supplies first-pass draft text and timing evidence; see `docs/agent-setup.md` for verified host paths and use. ChatCut may supply additional timing evidence later, but is not the default first-pass ASR provider. Complete the content analysis before downstream planning even when a reference script exists. Follow `docs/talking-head-trim-standard.md` for latest-take selection and context-preserving cuts.
 
 Without a reference script, follow [the unscripted talking-head standard](unscripted-talking-head-standard.md): establish the actual listening/review capability during transcription, resolve known wording doubts in one batch before release-caption planning, and review both speech and visible resets before the first rough-cut review. Use the existing template sections; this adds no state or user decision. ASR and narrow user confirmations never establish full-source listening, and a previous job's exception cannot be inherited.
 

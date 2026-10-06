@@ -1,6 +1,7 @@
 # Default Technology Stack
 
-- **ChatCut** — editable rough cut and preferred transcription surface.
+- **Local mlx-whisper** — full source transcription before whole-content analysis and downstream planning; see `docs/agent-setup.md` for the existing runtime.
+- **ChatCut** — editable rough cut; any later timing evidence supplements the completed local first pass.
 - **FFmpeg / FFprobe** — media probing, silence diagnosis, precision trims, and delivery verification.
 - **HyperFrames** — HTML composition timing, validation, preview, and rendering.
 - **HTML / CSS** — visual structure, typography, panels, diagrams, and decorative systems.

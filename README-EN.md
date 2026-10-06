@@ -22,7 +22,7 @@ The Agent checks the local environment first. If anything needs to be installed 
 ## What happens next
 
 1. You provide the local recording; the Agent checks media and records preferences.
-2. The Agent transcribes the full recording with ChatCut or the existing local mlx-whisper tool, reconciles wording, and maps the narrative, setup dependencies and repeated takes before editing—even when a script exists.
+2. New videos default to unscripted. The Agent first uses the existing local mlx-whisper tool to transcribe every full source recording and pickup, reads the whole transcript, reconciles wording and maps the narrative, setup dependencies and repeated takes before arranging any downstream production. You do not need to supply a script; a supplied reference never replaces this work.
 3. With the content understood, you select one of 24 source frames and then one of six complete standalone cover options.
 4. ChatCut builds the editable rough cut around the narrative. Repeated attempts use the last complete take by default; meaningful setup and emphasis remain. You review the timeline, pacing and playback speed.
 5. In default review mode, you approve the planned captions, supporting assets and motion before HyperFrames composition and rendering.
