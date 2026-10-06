@@ -64,14 +64,18 @@ Each subtitle-mode beat with `mgScope: "local"` must record:
 - `visualEncoding`: the relationship, evidence, or state encoded by the picture;
 - `stillFrameValue`: what remains understandable when motion is paused for one second;
 - `attentionCost`: `low`, `medium`, or `high`;
+- `layout.focalPlacement`: `center` or `side`, chosen for the viewer's current reading task;
+- `layout.focalPlacementRationale`: why that feed-scale location is clearest;
+- `layout.faceCoverRationale` whenever `faceCover` is `partial` or `intentional`;
 - `evidenceSource` when `supportRole` is `evidence`;
 - `factualClaims`: every factual addition with its traceable source, or an empty array;
 - `terms`: every introduced technical term or formula with a plain-language explanation, or an empty array;
 - `attentionCostReason` for a high-cost B-axis scene.
+- for V2, `visualDecision`: the selected treatment and its grounded information contribution; `argument` and `evidence` carry the supported `informationDelta` and readable state path, while `annotation` carries a grounded `memoryAnchor`, `supportingWordIds`, and `fallback`.
 
 Caption-only beats do not need these fields.
 
-Before implementation, `docs/caption-plan.md` must show every caption cue and every local MG mapping. The creative confirmation package must also list the ranges that intentionally receive no MG. Do not optimize toward a target count or cadence: select semantic nodes first, then design motion only inside the approved nodes.
+Before implementation, `docs/caption-plan.md` must show every caption cue and every local MG mapping. The creative confirmation package must also list the ranges that intentionally receive no MG. In V2, a subtitle passage stays MG-free unless `argument` or `evidence` declares one supported information delta and an adequate readable state path, or `annotation` declares a grounded memory anchor, support words, and fallback; annotation is not a substitute for an argument. `mgCadenceExceptions.coveredNoneBeatIds` records intentional no-MG ranges without overturning them. Cadence coverage is not an MG-density target. See [docs/design/2026-08-21-visual-argument-decision-design.md](design/2026-08-21-visual-argument-decision-design.md) for examples and non-goals.
 
 `onScreenCopy` is the render contract. Viewer questions, rationale, caveats, removal loss, source notes, and phrases such as “经验档位” or “这里需要说明” are production metadata and must never leak into the frame. Prefer nouns, numbers, and relationship labels; captions already carry complete sentences.
 
@@ -89,7 +93,7 @@ Do not introduce a technical term, formula, or benchmark that creates more unans
 
 ## Timing and information behavior
 
-- Trigger MG at a semantic boundary or when the viewer question arises, not on a fixed “visual change every N seconds” timer.
+- Trigger MG at a semantic boundary or when the viewer question arises; never add it to satisfy a cadence target. Record intentional V2 `none` ranges rather than converting them into pattern interrupts.
 - Start the first meaningful event within the design-system delay limit, and reveal a connector with its destination container within the shared frame tolerance.
 - Treat MG as punctuation, not a continuous layer. In a typical subtitle-mode talking-head video, most runtime should remain talking head plus captions.
 - One MG passage performs one cognitive job.
@@ -99,7 +103,7 @@ Do not introduce a technical term, formula, or benchmark that creates more unans
 - Reuse the approved visual reference for copy, timing, or size-only changes.
 - Repeating a complete visual signature requires an explicit reuse group and semantic reason.
 - In B-axis stage mode, dependent elements may accumulate within one coherent page and exit together when that page resolves.
-- Reveal components in causal or reading order, then hold the resolved state long enough to inspect.
+- Reveal components in causal or reading order, then hold the resolved state long enough to inspect. For related evidence screenshots, prefer a downward sequential reveal with cumulative visibility inside one group and a shared exit; do not accumulate separate A-axis ideas. Bind every image to the actual spoken point and verify all requested images in encoded frames. A brief proof montage should normally last no more than about one second longer than nearby lifestyle photos; detailed reading needs a separately planned window. The reference job’s 1.95 seconds is not a reusable fixed duration.
 - Keep labels adjacent to the element they describe; avoid detached legends and visual search.
 - Prefer persistent end states over fleeting symbols.
 - Do not add a simultaneous reading task during the densest caption phrase.
@@ -107,7 +111,7 @@ Do not introduce a technical term, formula, or benchmark that creates more unans
 
 ## Evidence and claims
 
-- A factual addition needs a traceable source in the project research record.
+- A factual addition needs a traceable source in the project research record. Keep production checks in internal records; show only labels needed for audience understanding. Removing an internal label does not authorize stronger claims or removal of a necessary factual qualification.
 - Platform promises, simulated interfaces, reconstructed reports, and estimates must be labelled as such.
 - Do not generalize from one price, device, benchmark, or anecdote.
 - Show the assumption and important omitted cost for estimates.
@@ -131,7 +135,7 @@ Every proposed MG must pass:
 - an unexplained technical term or formula;
 - evidence represented by an unlabeled invented interface;
 - a complex A-axis overlay that should be a B-axis scene;
-- a fixed-cadence pattern interrupt with no semantic purpose;
+- a cadence-filling pattern interrupt with no semantic purpose, or an undocumented cadence exception;
 - A-axis information groups accumulated into a page instead of being replaced;
 - a transient graphic whose resolved meaning never remains visible;
 - any overlap with captions, PiP, evidence, protected UI, or platform chrome;

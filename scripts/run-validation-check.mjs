@@ -168,7 +168,7 @@ switch (contract.validator) {
     break;
   case "capture-review-snapshots": {
     const reviewTimes = phase === "final"
-      ? node("review-times.mjs", [path.join(jobRoot, "state", "beat-map.json")])
+      ? node("review-times.mjs", [path.join(jobRoot, "state", "beat-map.json"), path.join(jobRoot, "state", "transcript.json")])
         .split(",")
         .map(Number)
         .filter(Number.isFinite)

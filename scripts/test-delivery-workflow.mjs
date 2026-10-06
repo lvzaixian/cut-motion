@@ -22,6 +22,96 @@ const script = (name, argumentsList, options = {}) => run(
   options
 );
 const writeJson = (relativePath, value) => writeJsonAtomic(path.join(jobRoot, relativePath), value);
+const prepareTitles = (videoRelativePath) => {
+  const videoPath = path.join(jobRoot, videoRelativePath);
+  const workbookPath = path.join(jobRoot, "output", "titles.xlsx");
+  fs.writeFileSync(workbookPath, Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x54, 0x69, 0x74, 0x6c, 0x65, 0x73]));
+  const platforms = [
+    ["douyin", "抖音", "DY"],
+    ["video-account", "视频号", "SPH"],
+    ["xiaohongshu", "小红书", "XHS"],
+    ["bilibili", "B站", "BIL"],
+    ["kuaishou", "快手", "KS"]
+  ];
+  writeJson("state/titles.json", {
+    schemaVersion: "1.0.0",
+    status: "ready",
+    sourceDelivery: { path: videoRelativePath, sha256: sha256File(videoPath) },
+    workbook: { path: "output/titles.xlsx", sha256: sha256File(workbookPath) },
+    publicLanguageReviewed: true,
+    platforms: platforms.map(([id, displayName, prefix]) => ({
+      id,
+      displayName,
+      candidates: Array.from({ length: 5 }, (_, index) => ({
+        id: `${prefix}-${String(index + 1).padStart(2, "0")}`,
+        title: `公开 AI 观点 ${index + 1}`,
+        keywords: ["AI"],
+        hookType: "观点直给",
+        contentSupport: "Runtime fixture"
+      }))
+    })),
+    generatedAt: new Date().toISOString()
+  });
+};
+const prepareCover = () => {
+  const previewRoot = path.join(jobRoot, "previews", "cover");
+  const framePath = path.join(previewRoot, "frame-01.png");
+  const basePath = path.join(previewRoot, "base.png");
+  const outputPath = path.join(jobRoot, "output", "cover.png");
+  const frameIds = Array.from({ length: 24 }, (_, index) => String(index + 1).padStart(2, "0"));
+  run("ffmpeg", [
+    "-y", "-v", "error",
+    "-f", "lavfi", "-i", "color=c=black:s=1080x1440",
+    "-frames:v", "1", framePath
+  ]);
+  for (const id of frameIds.slice(1)) fs.copyFileSync(framePath, path.join(previewRoot, `frame-${id}.png`));
+  fs.copyFileSync(framePath, basePath);
+  fs.copyFileSync(framePath, outputPath);
+  for (let index = 1; index <= 6; index += 1) {
+    fs.copyFileSync(outputPath, path.join(previewRoot, `cover-${index}.png`));
+  }
+  const cover = readJson(path.join(jobRoot, "state", "cover.json"));
+  cover.schemaVersion = "2.1.0";
+  cover.status = "ready";
+  cover.styleId = "talking-head-opinion-poster-v2";
+  cover.frameCandidates = frameIds.map((id, index) => ({
+    id: `frame-${id}`,
+    path: `previews/cover/frame-${id}.png`,
+    timestampSeconds: index + 1,
+    reasons: ["Runtime fixture"]
+  }));
+  cover.renderedCandidates = Array.from({ length: 6 }, (_, index) => ({
+    id: `cover-${index + 1}`,
+    frameId: "frame-01",
+    basePath: "previews/cover/base.png",
+    headlineLines: ["公开观点", `结论 ${index + 1}`],
+    source: "user-brief",
+    previewPath: `previews/cover/cover-${index + 1}.png`
+  }));
+  cover.selection = {
+    frameId: "frame-01",
+    renderedCandidateId: "cover-1"
+  };
+  cover.coverBase = {
+    sourceFrameId: "frame-01",
+    crop: { x: 0, y: 0, width: 1080, height: 1440 },
+    method: "direct-source-crop",
+    path: "previews/cover/base.png",
+    sha256: sha256File(basePath),
+    width: 1080,
+    height: 1440
+  };
+  cover.visualReview = {
+    subjectIntegrity: true,
+    headlineAboveEyes: true,
+    thumbnailReadable: true,
+    noOpaqueTextBackdrop: true,
+    noDarkGradient: true,
+    safeAreaChecked: true
+  };
+  cover.publicLanguageReviewed = true;
+  writeJson("state/cover.json", cover);
+};
 
 try {
   const source = path.join(temporaryRoot, "source.mp4");
@@ -34,6 +124,11 @@ try {
     source
   ]);
   run(path.join(repositoryRoot, "scripts", "scaffold-project.sh"), [jobRoot, source, "review", "subtitles"]);
+  const legacyWorkflow = readJson(workflowPath);
+  delete legacyWorkflow.visualArrangementReviewRequired;
+  delete legacyWorkflow.visualArrangementReviewDecision;
+  delete legacyWorkflow.gates["visual-arrangement-review"];
+  writeJsonAtomic(workflowPath, legacyWorkflow);
   if (fontPath && path.isAbsolute(fontPath) && fs.existsSync(fontPath)) {
     fs.mkdirSync(path.join(jobRoot, "hyperframes", "assets", "fonts"), { recursive: true });
     fs.copyFileSync(fontPath, path.join(jobRoot, "hyperframes", "assets", "fonts", "smiley-sans-oblique.woff2"));
@@ -64,6 +159,9 @@ try {
   }))));
   script("create-transcript-reconciliation.mjs", [jobRoot, "input/source.mp4", reconciliationItems]);
   script("workflow-state.mjs", [workflowPath, "advance"]);
+  assert.equal(readJson(workflowPath).currentState, "transcription");
+  prepareCover();
+  script("workflow-state.mjs", [workflowPath, "approve-cover", "--actor", "user", "--note", "Approve runtime cover"]);
   script("workflow-state.mjs", [workflowPath, "advance", "--artifact", "state/transcript.json"]);
 
   const workflow = readJson(workflowPath);
@@ -71,13 +169,36 @@ try {
   workflow.sourceTranscriptSha256 = sha256File(path.join(jobRoot, "state", "source-transcript.json"));
   workflow.gates["rough-cut-review"] = { status: "not-reached" };
   writeJsonAtomic(workflowPath, workflow);
+  const chatcutRoughCutPath = path.join(jobRoot, "state", "chatcut-roughcut.json");
+  const chatcutRecordedAt = new Date().toISOString();
   writeJson("state/chatcut-roughcut.json", {
     schemaVersion: "1.0.0",
     source: "chatcut",
     projectId: "runtime-project",
     timelineIds: ["runtime-timeline"],
     activeTimelineId: "runtime-timeline",
-    recordedAt: new Date().toISOString()
+    recordedAt: chatcutRecordedAt
+  });
+  writeJson("state/roughcut-selection.json", {
+    schemaVersion: "1.0.0",
+    policy: "reference-aligned-last-complete-take-v1",
+    sourceTranscriptSha256: workflow.sourceTranscriptSha256,
+    transcriptReconciliationSha256: sha256File(path.join(jobRoot, "state", "transcript-reconciliation.json")),
+    referenceScriptSha256: null,
+    chatcutRoughCutSha256: sha256File(chatcutRoughCutPath),
+    verifiedAt: new Date(Date.parse(chatcutRecordedAt) + 1).toISOString(),
+    chatcut: { projectId: "runtime-project", activeTimelineId: "runtime-timeline" },
+    selections: [{
+      referenceItemIds: [],
+      takes: [{
+        id: "runtime-complete-take",
+        sourceSegmentIds: transcript.segments.map((segment) => segment.id),
+        disposition: "complete",
+        audioReviewedEvidence: "Audio reviewed: complete runtime take."
+      }],
+      selectedTakeId: "runtime-complete-take"
+    }],
+    discards: []
   });
   script("workflow-state.mjs", [workflowPath, "advance", "--artifact", "state/chatcut-roughcut.json"]);
   script("workflow-state.mjs", [workflowPath, "set-caption-mode", "subtitles", "--actor", "agent", "--note", "Runtime caption recommendation"]);
@@ -105,13 +226,31 @@ try {
 
   const finalPath = path.join(jobRoot, "output", "final.mp4");
   fs.copyFileSync(source, finalPath);
+  const missingTitlePackage = spawnSync(process.execPath, [
+    path.join(repositoryRoot, "scripts", "workflow-state.mjs"),
+    workflowPath, "advance", "--artifact", "output/final.mp4"
+  ], { encoding: "utf8" });
+  assert.notEqual(missingTitlePackage.status, 0);
+  assert.match(`${missingTitlePackage.stdout}\n${missingTitlePackage.stderr}`, /Title package invalid/i);
+  prepareTitles("output/final.mp4");
   script("workflow-state.mjs", [workflowPath, "advance", "--artifact", "output/final.mp4"]);
   let completed = readJson(workflowPath);
   assert.equal(completed.currentState, "complete");
   assert.equal(completed.lastKnownGoodDelivery.path, "output/final.mp4");
 
   script("workflow-state.mjs", [workflowPath, "reopen", "delivery", "--actor", "user", "--note", "Retest delivery promotion"]);
-  fs.copyFileSync(finalPath, path.join(jobRoot, "output", "final.candidate.mp4"));
+  run("ffmpeg", [
+    "-y", "-v", "error", "-i", finalPath,
+    "-vf", "hue=s=0", "-c:v", "libx264", "-c:a", "aac",
+    path.join(jobRoot, "output", "final.candidate.mp4")
+  ]);
+  const staleTitlePackage = spawnSync(process.execPath, [
+    path.join(repositoryRoot, "scripts", "workflow-state.mjs"),
+    workflowPath, "advance", "--artifact", "output/final.candidate.mp4"
+  ], { encoding: "utf8" });
+  assert.notEqual(staleTitlePackage.status, 0);
+  assert.match(`${staleTitlePackage.stdout}\n${staleTitlePackage.stderr}`, /Title package invalid/i);
+  prepareTitles("output/final.candidate.mp4");
   script("workflow-state.mjs", [workflowPath, "advance", "--artifact", "output/final.candidate.mp4"]);
   completed = readJson(workflowPath);
   assert.equal(completed.currentState, "complete");
@@ -122,13 +261,14 @@ try {
   fs.appendFileSync(path.join(jobRoot, "state", "source-transcript.json"), "\n");
   const tampered = spawnSync(process.execPath, [
     path.join(repositoryRoot, "scripts", "workflow-state.mjs"),
-    workflowPath, "advance", "--artifact", "roughcut/a-roll.mp4"
+    workflowPath, "advance", "--artifact", "state/chatcut-roughcut.json"
   ], { encoding: "utf8" });
   assert.notEqual(tampered.status, 0);
   assert.match(`${tampered.stdout}\n${tampered.stderr}`, /Source transcript changed after its timeline lock/);
 
   const state = readJson(workflowPath);
-  assert.deepEqual(Object.keys(state.gates), ["rough-cut-review"]);
+  assert.equal(state.visualArrangementReviewRequired, true);
+  assert.deepEqual(Object.keys(state.gates), ["rough-cut-review", "visual-arrangement-review"]);
   console.log("Delivery workflow runtime test passed.");
 } finally {
   fs.rmSync(temporaryRoot, { recursive: true, force: true });

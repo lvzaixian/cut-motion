@@ -32,13 +32,20 @@ required_files=(
   README.md
   docs/agent-setup.md
   docs/quality-gates.md
+  docs/title-standard.md
   assets/design-system.default.json
   config/validation-evidence-contracts.json
   schemas/chatcut-roughcut.schema.json
+  schemas/roughcut-selection.schema.json
+  schemas/cover.schema.json
+  schemas/titles.schema.json
   schemas/workflow.schema.json
   schemas/render-manifest.schema.json
   schemas/validation-receipt.schema.json
   scripts/build-composition.mjs
+  scripts/check-cover.mjs
+  scripts/check-roughcut-selection.mjs
+  scripts/check-titles.mjs
   scripts/render-manifest.mjs
   scripts/render-chunks.mjs
   scripts/run-validation-check.mjs

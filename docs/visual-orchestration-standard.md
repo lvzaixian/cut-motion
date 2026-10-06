@@ -94,6 +94,12 @@ rough-cut-export → motion-plan → visual-arrangement-review → composition �
 
 “首次可读”是观众无需依赖运动即可读到核心信息的第一帧；“落定”是布局完成、可稳定阅读的第一帧；它们不能被容器出现或透明度尚低的帧替代。
 
+### 3.4 V2 视觉论证决策
+
+`visualOrchestrationVersion: 2` 的计划先决定 `none`、`annotation`、`argument` 或 `evidence`，再选择如何运动。`none` 是有效结果：没有被口播或登记素材支持的信息增益时，保持口播加字幕；`mgCadenceExceptions.coveredNoneBeatIds` 只能如实记录这类范围，不能把它改写成凑节奏的 MG。
+
+规划与复核时，`argument` 必须让同一对象族贯穿 3–4 个有词锚的可读状态；`evolve` 只用于 2.4–4.5 秒的因果序列。`evidence` 必须受已登记素材的可见事实和禁止推断边界约束。确定性检查器验证声明的结构、锚点、状态顺序、素材和覆盖关系；既有 `visual-arrangement-review` 在合成前判断计划的构图、节奏、字形和阅读路线，合成后的实际包装仍由既有抽帧/帧级 QA 复核。示例和非目标见 [视觉论证决策设计说明](design/2026-08-21-visual-argument-decision-design.md)。
+
 ## 4. 素材、隐私与事实边界
 
 素材不再只存在于自由文本。`state/beat-map.json` 增加受控资产登记与引用：
@@ -135,8 +141,16 @@ rough-cut-export → motion-plan → visual-arrangement-review → composition �
 - 素材文件必须位于任务 `input/` 内；路径不能逃逸任务目录，SHA-256 必须匹配；
 - `sourceOrRights` 与 `privacyStatus` 未批准时不得进入 `composition`；
 - `visibleFacts` 是画面能支持的唯一事实范围；`forbiddenInferences` 必须同时进入确认包，避免截图因相邻摆放而暗示收入、因果、平台、日期或币种；
-- 每一项引用必须有明确展示窗口、裁切与遮罩说明；无素材的 MG 仍要登记为空数组，而不是遗漏字段；
+- 每一项引用必须有明确对应口播、展示窗口、裁切与遮罩说明；无素材的 MG 仍要登记为空数组，而不是遗漏字段。逐项检查请求的素材在实际编码画面中是否完整出现、是否跨占后一个观点；同组证明图按阅读顺序逐张展开并统一退出，时长与相邻素材协调，不能为了塞全而长期占屏；
 - 真实证据优先直接呈现；不够支持的内容不以“概念卡片”伪造成证据。
+
+### 4.1 完整截图与同组阅读预算
+
+执行 [无脚本口播与截图编排规范](unscripted-talking-head-standard.md) 第 4–7 节；此处截图规则也适用于有参考稿的任务。素材入场先逐项说明采用或不采用的去向，个人规划、饮食、健身、录取与复盘截图默认全图等比呈现，仅遮实际敏感字段；局部裁切必须有明确阅读收益并保留全图上下文。源图与源像素遮罩共同变换，不能用切碎图片代替隐私处理。
+
+在既有 `viewerQuestion` / `visualEncoding` / `materialRefs` 中说明是概貌确认、同组规模展示还是细节阅读。按最具体的口播词安排同组子图入场，分别预算逐张间隔、完全建组、最后整组稳定停留及统一退出；读细节不能借快速堆叠宣称可读完，完整图也不能因此长驻占住后续观点。位置与大小按手机观看尺度和字幕安全区检查，不固定继承本期秒数或坐标。
+
+这些说明与时序须从 Beat Map 进入现有生成确认表；仅改模板或生成后的 Markdown 不算落实。首个复杂截图组或已发现的遮罩、重叠、时序风险允许一次最小实际编码上下文诊断，不扩大为默认整片二次 QA，也不新增用户审批点。
 
 ## 5. 对象级语义时序
 
@@ -164,7 +178,7 @@ rough-cut-export → motion-plan → visual-arrangement-review → composition �
 - 同一 `revealGroup` 的连接线和目标容器相差不超过 2 帧；
 - 非证据类 A 轴对象的 `invisibleFrame - preMotionFrame` 默认不超过 3.5 秒；
 - 超过 3.5 秒只允许 `evidence-reading`、`causal-sequence`、`rhetorical-pause` 三种 `longHoldReason`，并且必须写最大帧数和退出词；
-- 下一主信息对象第一次可读前，前一 A 轴主对象必须完全隐藏；B 轴的累积仅限同一语义页。
+- 下一独立观点的主信息组第一次可读前，前一 A 轴主信息组必须完全隐藏；同一证据组的多张截图可作为子对象依次展开、累积呈现并统一退出，不把每张截图另建为独立主信息组。B 轴跨对象的累积仍限于同一语义页；词锚、阅读时间和安全区检查照常执行。
 
 ### 5.2 单一可执行时序
 

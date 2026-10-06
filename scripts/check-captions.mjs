@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveCaptionCues } from "./caption-review-utils.mjs";
@@ -14,12 +15,80 @@ const pagesDocument = JSON.parse(fs.readFileSync(pagesPath, "utf8"));
 const designSystem = JSON.parse(fs.readFileSync(designSystemPath, "utf8"));
 const expectedStyle = designSystem.captions;
 const errors = [];
+const jobDirectory = path.dirname(path.dirname(path.resolve(pagesPath)));
+const sha256File = (file) => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+const sha256 = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
 const displayUnits = (value) => [...value.normalize("NFKC")].reduce((sum, character) => {
   if (/\s/.test(character)) return sum + 0.25;
   if (/[\u0000-\u007f]/.test(character)) return sum + 0.55;
   if (/[，。；：！？、]/u.test(character)) return sum + 0.5;
   return sum + 1;
 }, 0);
+
+const validateRecoveryEvidence = () => {
+  const recovery = pagesDocument.recovery;
+  if (!recovery || typeof recovery !== "object" || Array.isArray(recovery)) {
+    errors.push("recovered ChatCut timing evidence has invalid provenance");
+    return;
+  }
+  if (recovery.kind !== "reprojected-locked-chatcut-transcript" || recovery.originalViewerPageExportPresent !== false) {
+    errors.push("recovered ChatCut timing evidence has invalid provenance");
+    return;
+  }
+  const expectedPaths = {
+    transcript: "state/transcript.json",
+    roughCutRecord: "state/chatcut-roughcut.json",
+    sourceTranscript: "state/source-transcript.json",
+    roughCutSelection: "state/roughcut-selection.json",
+    media: "roughcut/a-roll.mp4"
+  };
+  const hashes = recovery.sourceHashes;
+  if (!hashes || typeof hashes !== "object" || Array.isArray(hashes)
+    || JSON.stringify(Object.keys(hashes).sort()) !== JSON.stringify(Object.keys(expectedPaths).sort())) {
+    errors.push("recovered ChatCut timing evidence lacks the complete source-hash set");
+  } else {
+    for (const [name, relativePath] of Object.entries(expectedPaths)) {
+      const record = hashes[name];
+      if (record?.path !== relativePath || !sha256(record?.sha256)) {
+        errors.push(`recovered ChatCut timing evidence has an invalid ${name} hash record`);
+        continue;
+      }
+      try {
+        if (sha256File(path.join(jobDirectory, relativePath)) !== record.sha256) {
+          errors.push(`recovered ChatCut timing evidence ${name} hash is stale`);
+        }
+      } catch {
+        errors.push(`recovered ChatCut timing evidence ${name} source is unreadable`);
+      }
+    }
+  }
+  const audit = recovery.cleanExportAudit;
+  const requiredFrames = [0, 1200, 2400, 3600, 4800, 6000, 7200];
+  if (audit?.kind !== "representative-frame-audit"
+    || audit?.media?.path !== pagesDocument.cleanExport
+    || audit?.media?.sha256 !== hashes?.media?.sha256
+    || audit?.fps !== pagesDocument.fps
+    || JSON.stringify(audit?.sampledFrames) !== JSON.stringify(requiredFrames)
+    || audit?.result !== "no-visible-burned-captions"
+    || !nonempty(audit?.scope)) {
+    errors.push("recovered ChatCut timing evidence lacks its bound clean A-roll audit");
+  }
+  try {
+    const transcript = JSON.parse(fs.readFileSync(path.join(jobDirectory, expectedPaths.transcript), "utf8"));
+    const selection = JSON.parse(fs.readFileSync(path.join(jobDirectory, expectedPaths.roughCutSelection), "utf8"));
+    const workflow = JSON.parse(fs.readFileSync(path.join(jobDirectory, "state", "workflow.json"), "utf8"));
+    if (transcript.timingAuthority?.sourceTranscript?.sha256 !== hashes?.sourceTranscript?.sha256
+      || selection.sourceTranscriptSha256 !== hashes?.sourceTranscript?.sha256
+      || selection.chatcutRoughCutSha256 !== hashes?.roughCutRecord?.sha256
+      || workflow.authoritativeMediaPath !== expectedPaths.media
+      || workflow.authoritativeMediaSha256 !== hashes?.media?.sha256) {
+      errors.push("recovered ChatCut timing evidence no longer matches its locked job authorities");
+    }
+  } catch {
+    errors.push("recovered ChatCut timing evidence cannot read its locked job authorities");
+  }
+};
 if (captions.source?.kind !== "approved-semantic-plan") errors.push("release captions must originate from an approved semantic plan");
 if (captions.source?.fps !== pagesDocument.fps) errors.push("caption fps must match the locked edit timeline");
 if (captions.source?.roughCutLocked !== true) errors.push("captions require a locked ChatCut rough cut");
@@ -27,6 +96,13 @@ if (captions.source?.captionRenderDisabled !== true) errors.push("captions requi
 if (captions.source?.cleanExport !== pagesDocument.cleanExport) errors.push("caption clean export must match the locked ChatCut export");
 if (pagesDocument.source !== "chatcut-viewer-pages") errors.push("raw timing evidence must originate from ChatCut viewer pages");
 if (pagesDocument.roughCutLocked !== true || pagesDocument.captionRenderDisabled !== true) errors.push("ChatCut timing evidence is not locked");
+if (Object.hasOwn(pagesDocument, "recovery")) validateRecoveryEvidence();
+
+const pageIds = new Set();
+for (const page of pagesDocument.pages ?? []) {
+  if (!nonempty(page?.id) || pageIds.has(page.id)) errors.push("ChatCut timing evidence has a missing or duplicate page ID");
+  pageIds.add(page?.id);
+}
 
 for (const [field, expected] of Object.entries(expectedStyle)) {
   if (JSON.stringify(captions.style?.[field]) !== JSON.stringify(expected)) errors.push(`Caption style ${field} must match the design system`);

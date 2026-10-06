@@ -3,8 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { deriveMotionIndex } from "./motion-index.mjs";
-import { deriveRenderManifest, resolveRenderMode, unsafeRenderIntervals } from "./render-manifest.mjs";
+import * as frameWindowUtils from "./frame-window-utils.mjs";
+import { deriveRenderInputs, deriveRenderManifest, resolveRenderMode, unsafeRenderIntervals } from "./render-manifest.mjs";
 import {
   assertPinnedArtifacts,
   pinRenderedArtifacts,
@@ -15,10 +17,11 @@ import {
   validateCacheReceipt,
   verifyAssemblyReceipt
 } from "./render-chunks.mjs";
-import { readJson, sha256File, writeJsonAtomic } from "./workflow-utils.mjs";
+import { computeCreativeAuthorities, computeDesignLanguageFingerprint, readJson, sha256File, writeJsonAtomic } from "./workflow-utils.mjs";
 
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cut-motion-render-core-"));
 const jobRoot = path.join(temporaryRoot, "job");
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const write = (relativePath, content) => {
   const target = path.join(jobRoot, relativePath);
   fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -77,12 +80,174 @@ try {
   writeJson("state/design-system.json", { canvas: { width: 1080, height: 1920 } });
   writeJson("state/creative-confirmation.json", { visualAxisMode: "a-axis-overlay" });
 
+  const v2AuthorityJobRoot = path.join(temporaryRoot, "v2-authority-job");
+  const writeV2AuthorityJson = (relativePath, value) => {
+    const filePath = path.join(v2AuthorityJobRoot, relativePath);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
+  };
+  const v2MaterialPath = path.join(v2AuthorityJobRoot, "input", "evidence", "registered.png");
+  fs.mkdirSync(path.dirname(v2MaterialPath), { recursive: true });
+  fs.writeFileSync(v2MaterialPath, "fact-bounded registered material");
+  const v2VisualDecision = {
+    mode: "argument",
+    informationDelta: {
+      kind: "state-change",
+      statement: "The argument moves through three supported states.",
+      basis: "spoken-structure",
+      supportingWordIds: ["segment-001:word-001"]
+    },
+    objectFamily: "state-cards",
+    visualVerb: "evolve",
+    evolutionMode: "evolve",
+    argumentStates: [
+      { id: "before", anchorWordId: "segment-001:word-001", operation: "introduce", activeObjectCueIds: ["primary-copy"], stateChange: "Introduce the starting state.", readability: "clear" },
+      { id: "during", anchorWordId: "segment-001:word-002", operation: "transform", activeObjectCueIds: ["primary-copy"], stateChange: "Transform the starting state.", readability: "clear" },
+      { id: "after", anchorWordId: "segment-001:word-003", operation: "resolve", activeObjectCueIds: ["primary-copy"], stateChange: "Resolve the transformed state.", readability: "impact" }
+    ],
+    fallback: "Use the complete spoken structure as subtitles."
+  };
+  const v2BeatMap = {
+    duration: 3,
+    fps: 30,
+    captionMode: "subtitles",
+    designSystem: "state/design-system.json",
+    visualOrchestrationVersion: 2,
+    materials: [{
+      id: "registered-evidence",
+      path: "input/evidence/registered.png",
+      kind: "screenshot",
+      sha256: sha256File(v2MaterialPath),
+      sourceOrRights: "test fixture",
+      privacyStatus: "approved",
+      visibleFacts: ["The material is limited to this registered fixture."],
+      forbiddenInferences: ["Do not infer beyond the registered fixture."]
+    }],
+    beats: [{
+      id: "beat-v2",
+      sceneId: "scene-001",
+      sourceSegmentIds: ["segment-001"],
+      text: "A fact-bounded visual argument.",
+      start: 0,
+      end: 3,
+      audioAnchorTime: 0,
+      axis: "A",
+      recipe: "argument",
+      intent: "Explain the state transition.",
+      motionFamily: "editorial",
+      transitionFamily: "cut",
+      mgScope: "local",
+      visualDecision: v2VisualDecision
+    }]
+  };
+  writeV2AuthorityJson("state/transcript.json", {
+    segments: [{ id: "segment-001", words: [{ text: "一", start: 0, end: 0.5 }, { text: "二", start: 1, end: 1.5 }, { text: "三", start: 2, end: 2.5 }] }]
+  });
+  writeV2AuthorityJson("state/beat-map.json", v2BeatMap);
+  writeV2AuthorityJson("state/design-system.json", { canvas: { width: 1080, height: 1920 } });
+  writeV2AuthorityJson("state/creative-confirmation.json", { visualAxisMode: "a-axis-overlay" });
+  writeV2AuthorityJson("captions/caption-review-plan.json", { cues: [] });
+  const v2Authorities = computeCreativeAuthorities(v2AuthorityJobRoot, "subtitles");
+  assert.deepEqual(v2Authorities["material:registered-evidence"], {
+    path: "input/evidence/registered.png",
+    sha256: sha256File(v2MaterialPath)
+  });
+  const v2DesignFingerprint = computeDesignLanguageFingerprint(v2AuthorityJobRoot, "subtitles");
+  const v2ObjectFamilyMutation = structuredClone(v2BeatMap);
+  v2ObjectFamilyMutation.beats[0].visualDecision.objectFamily = "causal-chain";
+  writeV2AuthorityJson("state/beat-map.json", v2ObjectFamilyMutation);
+  assert.notEqual(
+    computeDesignLanguageFingerprint(v2AuthorityJobRoot, "subtitles"),
+    v2DesignFingerprint,
+    "visualDecision.objectFamily must invalidate the design-language fingerprint"
+  );
+  const v2StateChangeMutation = structuredClone(v2BeatMap);
+  v2StateChangeMutation.beats[0].visualDecision.argumentStates[1].stateChange = "Filter the starting state before resolution.";
+  writeV2AuthorityJson("state/beat-map.json", v2StateChangeMutation);
+  assert.notEqual(
+    computeDesignLanguageFingerprint(v2AuthorityJobRoot, "subtitles"),
+    v2DesignFingerprint,
+    "visualDecision argument-state changes must invalidate the design-language fingerprint"
+  );
+
+  writeJson("state/beat-map.json", { fps: 60, duration: 195.116667, beats: [] });
+  writeJson("captions/captions.json", { cues: [] });
+  write("hyperframes/index.template.html", template(""));
+  assert.equal(deriveRenderInputs(jobRoot).totalFrames, 11707);
+  const { durationToFrames } = frameWindowUtils;
+  assert.equal(durationToFrames(195.116667, 60), 11707);
+  assert.equal(durationToFrames(2.01, 30), 61);
+  assert.equal(durationToFrames((11707.0005) / 60, 60), 11708);
+  write("hyperframes/index.template.html", template());
+  writeJson("state/beat-map.json", {
+    fps: 30,
+    duration: 30,
+    beats: [
+      { id: "beat-a", start: 0, end: 3, axis: "A", reuseGroup: "shared" },
+      { id: "beat-b", start: 3, end: 6, axis: "A", reuseGroup: "shared" }
+    ]
+  });
+  writeJson("captions/captions.json", {
+    cues: [{ id: "cue-1", start: 2, end: 3, startFrame: 60, endFrame: 90, text: "测试", lines: ["测试"] }]
+  });
+
   const manifest = deriveRenderManifest(jobRoot, { designLanguageFingerprint: "design-v1" });
   assert.equal(manifest.schemaVersion, "2.0.0");
   assert.ok(manifest.beats.every((beat) => beat.window && beat.fingerprint));
   assert.ok(manifest.captions.every((cue) => cue.window && cue.fingerprint));
   assert.ok(manifest.chunks.every((chunk) => /^[a-f0-9]{64}$/.test(chunk.cacheKey)));
   assert.ok(manifest.chunks.every((chunk) => !("standardKey" in chunk) && !("highKey" in chunk)));
+  const isolatedRenderRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cut-motion-render-manifest-"));
+  try {
+    for (const relativePath of [
+      "scripts/render-manifest.mjs",
+      "scripts/frame-window-utils.mjs",
+      "scripts/motion-window-utils.mjs",
+      "scripts/workflow-utils.mjs",
+      "scripts/visual-orchestration-version.mjs",
+      "scripts/build-composition.mjs",
+      "schemas/beat-map.schema.json"
+    ]) {
+      const source = path.join(repositoryRoot, relativePath);
+      const target = path.join(isolatedRenderRoot, relativePath);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(source, target);
+    }
+    const isolatedJobRoot = path.join(isolatedRenderRoot, "job");
+    const writeIsolated = (relativePath, content) => {
+      const target = path.join(isolatedJobRoot, relativePath);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, content);
+      return target;
+    };
+    const writeIsolatedJson = (relativePath, value) => writeIsolated(relativePath, `${JSON.stringify(value, null, 2)}\n`);
+    const isolatedMediaPath = writeIsolated("hyperframes/assets/a-roll.mp4", "authoritative-media");
+    writeIsolated("hyperframes/index.template.html", "<!-- CUT_MOTION_CAPTIONS_START --><!-- CUT_MOTION_CAPTIONS_END -->");
+    writeIsolatedJson("hyperframes/package.json", { private: true, devDependencies: { gsap: "3.13.0", hyperframes: "0.7.60" } });
+    writeIsolatedJson("hyperframes/node_modules/hyperframes/package.json", { version: "0.7.60", bin: { hyperframes: "dist/cli.js" } });
+    const isolatedCliPath = writeIsolated("hyperframes/node_modules/hyperframes/dist/cli.js", "#!/usr/bin/env node\n");
+    fs.chmodSync(isolatedCliPath, 0o755);
+    const isolatedBinDirectory = path.join(isolatedJobRoot, "hyperframes/node_modules/.bin");
+    fs.mkdirSync(isolatedBinDirectory, { recursive: true });
+    fs.symlinkSync(path.relative(isolatedBinDirectory, isolatedCliPath), path.join(isolatedBinDirectory, "hyperframes"));
+    writeIsolatedJson("state/transcript.json", { segments: [] });
+    writeIsolatedJson("state/beat-map.json", { fps: 30, duration: 30, beats: [] });
+    writeIsolatedJson("captions/captions.json", { cues: [] });
+    writeIsolatedJson("state/workflow.json", {
+      authoritativeMediaPath: "hyperframes/assets/a-roll.mp4",
+      authoritativeMediaSha256: sha256File(isolatedMediaPath),
+      captionMode: "subtitles"
+    });
+    writeIsolatedJson("state/design-system.json", { canvas: { width: 1080, height: 1920 } });
+    const isolatedRenderManifest = await import(pathToFileURL(path.join(isolatedRenderRoot, "scripts/render-manifest.mjs")).href);
+    const isolatedManifest = isolatedRenderManifest.deriveRenderManifest(isolatedJobRoot, { designLanguageFingerprint: "design-v1" });
+    fs.appendFileSync(path.join(isolatedRenderRoot, "scripts/visual-orchestration-version.mjs"), "\n// render dependency regression\n");
+    const helperRevision = isolatedRenderManifest.deriveRenderManifest(isolatedJobRoot, { designLanguageFingerprint: "design-v1" });
+    assert.notEqual(helperRevision.sharedDependencySha256, isolatedManifest.sharedDependencySha256);
+    assert.notEqual(helperRevision.chunks[0].cacheKey, isolatedManifest.chunks[0].cacheKey);
+  } finally {
+    fs.rmSync(isolatedRenderRoot, { recursive: true, force: true });
+  }
   writeJson("captions/captions.json", {
     cues: [{ id: "cue-1", start: 2, end: 3, text: "测试", lines: ["测试"] }]
   });
@@ -128,6 +293,19 @@ try {
   }
   write("hyperframes/index.template.html", `${template()}<script>fetch("./assets/one.png")</script>`);
   assert.throws(() => deriveRenderManifest(jobRoot), /Dynamic media references are unsupported/);
+  write("hyperframes/index.template.html", `${template()}<script>const clean = element.style.backgroundImage === "none";</script>`);
+  assert.doesNotThrow(() => deriveRenderManifest(jobRoot));
+  for (const operator of ["+=", "||=", "??="]) {
+    write("hyperframes/index.template.html", `${template()}<script>element.style.backgroundImage ${operator} "./assets/one.png";</script>`);
+    assert.throws(() => deriveRenderManifest(jobRoot), /Dynamic media references are unsupported/);
+  }
+  for (const source of [
+    `${template()}<script>image["src"] = "./assets/one.png";</script>`,
+    `${template()}<script>element.style.backgroundImage/**/= "./assets/one.png";</script>`
+  ]) {
+    write("hyperframes/index.template.html", source);
+    assert.throws(() => deriveRenderManifest(jobRoot), /Dynamic media references are unsupported/);
+  }
   write("hyperframes/index.template.html", template().replace("./assets/poster.png", "https://example.invalid/poster.png"));
   assert.throws(() => deriveRenderManifest(jobRoot), /Remote render resources must be localized/);
   write("hyperframes/index.template.html", template());
@@ -210,6 +388,43 @@ try {
     [],
     "reuseGroup must not create a continuous no-cut interval"
   );
+  const thoughtfulRenderBeatMap = readJson(path.join(jobRoot, "state", "beat-map.json"));
+  Object.assign(thoughtfulRenderBeatMap.beats[0], {
+    motionProfile: "thoughtful-editorial-v1",
+    surfaceTreatment: "direct-overlay",
+    objectCues: [{
+      id: "primary-copy",
+      semanticRole: "primary-copy",
+      spokenTriggerWordId: "segment-001:word-001",
+      preMotionFrame: 6,
+      firstLegibleFrame: 6,
+      settledFrame: 12,
+      exitTriggerWordId: "segment-001:word-002",
+      invisibleFrame: 84,
+      holdKind: "standard"
+    }]
+  });
+  writeJson("state/beat-map.json", thoughtfulRenderBeatMap);
+  const thoughtfulInputs = deriveRenderInputs(jobRoot);
+  const thoughtfulEntry = thoughtfulInputs.beats.find((beat) => beat.beatId === "beat-a");
+  assert.deepEqual(thoughtfulEntry.window, { startFrame: 6, endFrame: 84 });
+  const initialThoughtfulFingerprint = thoughtfulEntry.fingerprint;
+  thoughtfulRenderBeatMap.beats[0].objectCues[0].invisibleFrame = 90;
+  writeJson("state/beat-map.json", thoughtfulRenderBeatMap);
+  const changedThoughtfulEntry = deriveRenderInputs(jobRoot).beats.find((beat) => beat.beatId === "beat-a");
+  assert.deepEqual(changedThoughtfulEntry.window, { startFrame: 6, endFrame: 90 });
+  assert.notEqual(changedThoughtfulEntry.fingerprint, initialThoughtfulFingerprint);
+  const thoughtfulDesignBefore = computeDesignLanguageFingerprint(jobRoot, "subtitles");
+  const thoughtfulDesign = readJson(path.join(jobRoot, "state", "design-system.json"));
+  thoughtfulDesign.motionProfiles = {
+    "thoughtful-editorial-v1": {
+      defaultSurface: "direct-overlay",
+      cueTiming: { referenceFps: 60, maxPreMotionFrames: 3 }
+    }
+  };
+  writeJson("state/design-system.json", thoughtfulDesign);
+  const thoughtfulDesignAfter = computeDesignLanguageFingerprint(jobRoot, "subtitles");
+  assert.notEqual(thoughtfulDesignAfter, thoughtfulDesignBefore, "motion profile policy must invalidate the design-language fingerprint");
   const locator = deriveMotionIndex(jobRoot);
   assert.equal(locator.schemaVersion, "2.0.0");
   assert.ok(!("sourceHashes" in locator) && !("sharedDependencySha256" in locator));
@@ -324,7 +539,7 @@ const output = process.argv[process.argv.indexOf("--output") + 1];
 fs.appendFileSync(${JSON.stringify(renderLogPath)}, "render\\n");
 const result = spawnSync("ffmpeg", [
   "-v", "error", "-f", "lavfi", "-i", "color=black:s=160x284:r=30:d=30",
-  "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo:d=30", "-t", "30", "-shortest",
+  "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo:d=30.1",
   "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", output
 ], { stdio: "inherit" });
 process.exit(result.status ?? 1);
@@ -335,13 +550,13 @@ process.exit(result.status ?? 1);
   assert.equal(defaultRender.mode, "monolithic");
   assert.deepEqual(defaultRender.manifest.chunks.map(({ startFrame, endFrame }) => [startFrame, endFrame]), [[0, 900]]);
   assert.equal(fs.readFileSync(renderLogPath, "utf8").trim().split("\n").length, 1);
-  assert.equal(defaultRender.receipt, null);
-  assert.equal(fs.existsSync(`${defaultOutput}.render.json`), false);
+  assert.equal(defaultRender.receipt.mode, "monolithic");
+  assert.equal(verifyAssemblyReceipt(jobRoot, "previews/default.mp4", { quality: "standard" }).mode, "monolithic");
 
   const reviewHighOutput = path.join(jobRoot, "output/review-high.mp4");
   const reviewHighRender = renderOutput(jobRoot, "high", reviewHighOutput);
-  assert.equal(reviewHighRender.receipt, null);
-  assert.equal(fs.existsSync(`${reviewHighOutput}.render.json`), false);
+  assert.equal(reviewHighRender.receipt.mode, "monolithic");
+  assert.equal(verifyAssemblyReceipt(jobRoot, "output/review-high.mp4", { quality: "high" }).mode, "monolithic");
 
   const auditWorkflow = readJson(path.join(jobRoot, "state/workflow.json"));
   auditWorkflow.mode = "auto";

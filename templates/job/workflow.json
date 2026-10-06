@@ -3,7 +3,13 @@
   "schemaVersion": "1.0.0",
   "jobId": "job",
   "mode": "review",
+  "coverReviewDecision": "pending",
   "roughCutReviewDecision": "pending",
+  "visualArrangementReviewRequired": true,
+  "visualArrangementReviewDecision": "pending",
+  "roughCutSelectionPolicy": "reference-aligned-last-complete-take-v1",
+  "roughCutSelectionPolicyOrigin": "reference-aligned-last-complete-take-v1",
+  "roughCutSelectionFallbackWaiver": null,
   "captionMode": "subtitles",
   "captionModeSource": "default",
   "captionModeAcknowledged": false,
@@ -32,7 +38,8 @@
   "createdAt": null,
   "updatedAt": null,
   "gates": {
-    "rough-cut-review": { "status": "not-reached" }
+    "rough-cut-review": { "status": "not-reached" },
+    "visual-arrangement-review": { "status": "not-reached" }
   },
   "history": []
 }

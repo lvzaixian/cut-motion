@@ -128,6 +128,20 @@ srcset="assets/srcset-1.png 1x, assets/srcset-2.png 2x"><p>evidence</p></body></
     () => resolveValidationInvocation(jobRoot, "final", "information-value", "hyperframes/index.html"),
     /Dynamic validation media references/
   );
+  write("hyperframes/index.html", `${validSource}<script>const clean = element.style.backgroundImage === "none";</script>`);
+  assert.doesNotThrow(
+    () => resolveValidationInvocation(jobRoot, "final", "information-value", "hyperframes/index.html")
+  );
+  write("hyperframes/index.html", `${validSource}<script>element.style.backgroundImage ||= "assets/evidence.png";</script>`);
+  assert.throws(
+    () => resolveValidationInvocation(jobRoot, "final", "information-value", "hyperframes/index.html"),
+    /Dynamic validation media references/
+  );
+  write("hyperframes/index.html", `${validSource}<script>image["src"] = "assets/evidence.png";</script>`);
+  assert.throws(
+    () => resolveValidationInvocation(jobRoot, "final", "information-value", "hyperframes/index.html"),
+    /Dynamic validation media references/
+  );
   write("hyperframes/index.html", validSource);
 
   write("logs/final-information-value.log", "tampered output");

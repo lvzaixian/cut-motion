@@ -2,13 +2,28 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "cut-motion Workflow State",
   "type": "object",
-  "required": ["schemaVersion", "jobId", "mode", "roughCutReviewDecision", "captionMode", "captionModeSource", "captionModeAcknowledged", "visualAxisMode", "visualAxisModeSource", "visualAxisModeAcknowledged", "referenceScriptStatus", "referenceScriptAcknowledged", "referenceScriptPath", "referenceScriptSha256", "reconciliationReturnState", "creativeConfirmationSha256", "creativeDocumentFingerprints", "authoritativeMediaPath", "authoritativeMediaSha256", "sourceTranscriptSha256", "trimPlanSha256", "visualPlanSha256", "compositionArtifactPath", "compositionArtifactSha256", "revisionId", "currentState", "pendingGate", "completed", "gates", "history"],
+  "required": ["schemaVersion", "jobId", "mode", "coverReviewDecision", "roughCutReviewDecision", "captionMode", "captionModeSource", "captionModeAcknowledged", "visualAxisMode", "visualAxisModeSource", "visualAxisModeAcknowledged", "referenceScriptStatus", "referenceScriptAcknowledged", "referenceScriptPath", "referenceScriptSha256", "reconciliationReturnState", "creativeConfirmationSha256", "creativeDocumentFingerprints", "authoritativeMediaPath", "authoritativeMediaSha256", "sourceTranscriptSha256", "trimPlanSha256", "visualPlanSha256", "compositionArtifactPath", "compositionArtifactSha256", "revisionId", "currentState", "pendingGate", "completed", "gates", "history"],
   "properties": {
     "$schema": { "type": "string" },
     "schemaVersion": { "const": "1.0.0" },
     "jobId": { "type": "string" },
     "mode": { "enum": ["review", "auto"] },
+    "coverReviewDecision": { "enum": ["pending", "approved"] },
     "roughCutReviewDecision": { "enum": ["pending", "manual-approved", "automatic-fallback"] },
+    "visualArrangementReviewRequired": { "const": true },
+    "visualArrangementReviewDecision": { "enum": ["pending", "manual-approved", "automatic-accepted"] },
+    "roughCutSelectionPolicy": { "enum": [null, "reference-aligned-last-complete-take-v1"] },
+    "roughCutSelectionPolicyOrigin": { "enum": [null, "reference-aligned-last-complete-take-v1"] },
+    "roughCutSelectionFallbackWaiver": {
+      "type": ["object", "null"],
+      "required": ["actor", "waivedAt", "reason"],
+      "properties": {
+        "actor": { "const": "user" },
+        "waivedAt": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
     "captionMode": { "enum": ["motion-copy", "subtitles"] },
     "captionModeSource": { "enum": ["default", "user", "auto"] },
     "captionModeAcknowledged": { "type": "boolean" },
@@ -40,16 +55,17 @@
     },
     "revisionId": { "type": "integer", "minimum": 1 },
     "currentState": {
-      "enum": ["intake", "transcription", "rough-cut", "rough-cut-review", "rough-cut-export", "motion-plan", "composition", "render", "complete"]
+      "enum": ["intake", "transcription", "rough-cut", "rough-cut-review", "rough-cut-export", "motion-plan", "visual-arrangement-review", "composition", "render", "complete"]
     },
-    "pendingGate": { "type": ["string", "null"] },
+    "pendingGate": { "enum": [null, "rough-cut-review", "visual-arrangement-review"] },
     "completed": { "type": "boolean" },
     "createdAt": { "type": ["string", "null"] },
     "updatedAt": { "type": ["string", "null"] },
     "gates": {
       "type": "object",
       "properties": {
-        "rough-cut-review": { "type": "object" }
+        "rough-cut-review": { "type": "object" },
+        "visual-arrangement-review": { "type": "object" }
       },
       "additionalProperties": false
     },
@@ -71,5 +87,14 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "visualArrangementReviewRequired": { "const": true } },
+        "required": ["visualArrangementReviewRequired"]
+      },
+      "then": { "required": ["visualArrangementReviewDecision"] }
+    }
+  ],
   "additionalProperties": false
 }

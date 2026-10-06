@@ -23,15 +23,15 @@ Agent 会先检查电脑环境。需要安装工具或登录服务时，会解�
 
 ```text
 intake → transcription → rough-cut → rough-cut-review → rough-cut-export
-→ motion-plan → composition → render → complete
+→ motion-plan → visual-arrangement-review → composition → render → complete
 ```
 
 1. 你提供口播视频；Agent 探测媒体并记录可选偏好。
-2. Agent 转写并对齐录音，处理参考逐字稿与录音之间的差异。
-3. ChatCut 只负责可编辑粗剪：删除明显口误、重复和无意义空白，不在 ChatCut 中制作字幕、MG 或 B-axis 画面。
-4. 唯一人工门控是 `rough-cut-review`：Agent 打开 ChatCut 粗剪时间线，等待你批准或要求返修。`review` 在这里暂停；`auto` 在同一状态路径上执行显式自动校验并继续。
-5. 粗剪导出后，进入 HyperFrames 阶段，在这里完成字幕、MG、A/B-axis 画面、合成与渲染。
-6. `review` 快速路径只做必要的基础媒体检查，不跑全量自动校验、标准预览或短样片；默认直接按交付质量渲染一次。`auto` 不增加状态，只在既有转移上执行自动校验。
+2. 先完整转写、核对录音，再解析主旨、铺垫、叙述顺序和重录候选；有参考稿也不跳过。可使用 ChatCut 或已有本地 mlx-whisper，路径与用法见环境文档。
+3. 根据实际内容制作独立封面：你从 24 张原始静帧选底图，再从 6 张完整封面选最终图。
+4. ChatCut 按内容逻辑做可编辑粗剪。同一内容重录默认取最后一次完整表达，保留必要铺垫和有效强调，再精简无意义卡顿与空白；你确认时间线、节奏与倍率。
+5. 粗剪导出后，Agent 提出字幕、素材和动画的视觉编排包；默认 `review` 模式由你确认后，再在 HyperFrames 完成包装、合成和成片渲染。
+6. 交付封面、视频及五个平台各五条候选的标题表。默认只做必要检查；`auto` 必须由你明确选择，自动校验不能替代审美判断，也不授权发布。
 
 ## 两种字幕模式
 

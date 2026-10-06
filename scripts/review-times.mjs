@@ -1,8 +1,9 @@
 import fs from "node:fs";
+import { isVisualOrchestrationV2 } from "./visual-orchestration-version.mjs";
 
-const beatMapPath = process.argv[2];
+const [beatMapPath, transcriptPath] = process.argv.slice(2);
 if (!beatMapPath) {
-  console.error("Usage: node review-times.mjs <beat-map.json>");
+  console.error("Usage: node review-times.mjs <beat-map.json> [transcript.json]");
   process.exit(64);
 }
 
@@ -27,6 +28,26 @@ for (const beat of motionBeats) {
 
 for (let index = 1; index < beats.length; index += 1) {
   if (beats[index - 1].axis !== beats[index].axis) times.add(Number(beats[index].start).toFixed(3));
+}
+
+if (transcriptPath && isVisualOrchestrationV2(beatMap)) {
+  const wordsById = new Map(
+    (JSON.parse(fs.readFileSync(transcriptPath, "utf8")).segments ?? []).flatMap((segment) =>
+      (segment.words ?? []).map((word, index) => [`${segment.id}:word-${String(index + 1).padStart(3, "0")}`, word])
+    )
+  );
+  for (const beat of beats.filter((candidate) => ["argument", "evidence"].includes(candidate.visualDecision?.mode))) {
+    const cueById = new Map((beat.objectCues ?? []).map((cue) => [cue.id, cue]));
+    for (const state of beat.visualDecision.argumentStates ?? []) {
+      const word = wordsById.get(state.anchorWordId);
+      if (!word) continue;
+      const anchorFrame = Math.ceil(Number(word.start) * Number(beatMap.fps) - 1e-6);
+      const settledFrames = (state.activeObjectCueIds ?? [])
+        .map((cueId) => cueById.get(cueId)?.settledFrame)
+        .filter(Number.isInteger);
+      times.add((Math.max(anchorFrame, ...settledFrames) / Number(beatMap.fps)).toFixed(3));
+    }
+  }
 }
 
 if (beats.length > 0) {

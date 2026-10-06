@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { isVisualOrchestrationActive } from "./visual-orchestration-version.mjs";
 
 export const readJson = (filePath) => JSON.parse(fs.readFileSync(filePath, "utf8"));
 
@@ -15,7 +16,15 @@ export const writeJsonAtomic = (filePath, value) => {
 
 export const sha256File = (filePath) => {
   const hash = crypto.createHash("sha256");
-  hash.update(fs.readFileSync(filePath));
+  const descriptor = fs.openSync(filePath, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    for (let bytesRead; (bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, null)) > 0;) {
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+  } finally {
+    fs.closeSync(descriptor);
+  }
   return hash.digest("hex");
 };
 
@@ -92,13 +101,40 @@ export const assertRegularContainedFile = (parent, candidate, label = "File") =>
 };
 
 export const ensureWorkflowDefaults = (workflow) => {
+  if (Object.hasOwn(workflow, "visualArrangementReviewRequired") && workflow.visualArrangementReviewRequired !== true) {
+    throw new Error("visualArrangementReviewRequired may only be true when present");
+  }
+  workflow.coverReviewDecision ??= "pending";
   workflow.roughCutReviewDecision ??= "pending";
+  workflow.roughCutSelectionPolicy ??= null;
+  workflow.roughCutSelectionPolicyOrigin ??= workflow.roughCutSelectionPolicy;
+  workflow.roughCutSelectionFallbackWaiver ??= null;
   workflow.lastKnownGoodDelivery ??= null;
   workflow.sourceTranscriptSha256 ??= null;
   workflow.history ??= [];
   workflow.gates ??= {};
+  if (workflow.visualArrangementReviewRequired === true) {
+    workflow.visualArrangementReviewDecision ??= "pending";
+    workflow.gates["visual-arrangement-review"] ??= { status: "not-reached" };
+  }
   return workflow;
 };
+
+export const resetVisualArrangementReview = (workflow) => {
+  if (workflow.visualArrangementReviewRequired !== true) return;
+  workflow.visualArrangementReviewDecision = "pending";
+  workflow.gates ??= {};
+  workflow.gates["visual-arrangement-review"] = { status: "not-reached" };
+};
+
+export const enableVisualArrangementReviewForMotionPlan = (workflow) => {
+  ensureWorkflowDefaults(workflow);
+  if (!Object.hasOwn(workflow, "visualArrangementReviewRequired")) {
+    workflow.visualArrangementReviewRequired = true;
+  }
+  resetVisualArrangementReview(workflow);
+};
+
 export const computeDesignLanguageFingerprint = (jobRoot, captionMode) => {
   const confirmation = readJson(path.join(jobRoot, "state", "creative-confirmation.json"));
   const beatMap = readJson(path.join(jobRoot, "state", "beat-map.json"));
@@ -111,6 +147,20 @@ export const computeDesignLanguageFingerprint = (jobRoot, captionMode) => {
     transitionFamily: beat.transitionFamily,
     primaryFlowAxis: beat.primaryFlowAxis,
     semanticTopology: beat.semanticTopology,
+    motionProfile: beat.motionProfile ?? null,
+    surfaceTreatment: beat.surfaceTreatment ?? null,
+    visualDecision: beat.visualDecision ?? null,
+    objectCueGrammar: (beat.objectCues ?? []).map((cue) => ({
+      id: cue.id,
+      semanticRole: cue.semanticRole,
+      spokenTriggerWordId: cue.spokenTriggerWordId,
+      preMotionFrame: cue.preMotionFrame,
+      firstLegibleFrame: cue.firstLegibleFrame,
+      settledFrame: cue.settledFrame,
+      exitTriggerWordId: cue.exitTriggerWordId,
+      invisibleFrame: cue.invisibleFrame,
+      holdKind: cue.holdKind
+    })).sort((left, right) => String(left.id).localeCompare(String(right.id))),
     revealGrammar: (beat.microEvents ?? []).map((event) => ({
       visualRole: event.visualRole,
       topologyRole: event.topologyRole
@@ -139,6 +189,7 @@ export const computeDesignLanguageFingerprint = (jobRoot, captionMode) => {
       density: designSystem.density,
       surface: designSystem.surface,
       motionContract: designSystem.motionContract,
+      motionProfiles: designSystem.motionProfiles,
       axisPolicies: designSystem.axisPolicies
     },
     uniqueGrammar,
@@ -177,12 +228,40 @@ export const validateActiveReference = (workflowPath, workflow) => {
   if (actual !== workflow.referenceScriptSha256) throw new Error("Reference script SHA-256 mismatch");
 };
 
+export const hasActiveSubtitleMgCadence = (jobRoot, captionMode) => {
+  if (captionMode !== "subtitles") return false;
+  const beatMapPath = path.join(jobRoot, "state", "beat-map.json");
+  const designSystemPath = path.join(jobRoot, "state", "design-system.json");
+  if (!fs.existsSync(beatMapPath) || !fs.existsSync(designSystemPath)) return false;
+  const beatMap = readJson(beatMapPath);
+  const designSystem = readJson(designSystemPath);
+  return Number(beatMap.duration) >= 20 && Object.hasOwn(designSystem, "subtitleMgCadence");
+};
+
 export const creativeAuthorityPaths = (jobRoot, captionMode) => {
   const paths = {
     transcript: "state/transcript.json",
-    beatMap: "state/beat-map.json"
+    beatMap: "state/beat-map.json",
+    designSystem: "state/design-system.json"
   };
   if (captionMode === "subtitles") paths.captionPlan = "captions/caption-review-plan.json";
+  const beatMapPath = path.join(jobRoot, "state", "beat-map.json");
+  if (!fs.existsSync(beatMapPath)) return paths;
+  const beatMap = readJson(beatMapPath);
+  if (!isVisualOrchestrationActive(beatMap)) return paths;
+  if (!Array.isArray(beatMap.materials)) throw new Error("Visual orchestration requires a materials registry");
+  const inputRoot = path.join(jobRoot, "input");
+  for (const material of beatMap.materials) {
+    if (typeof material?.id !== "string" || !/^[a-z0-9][a-z0-9-]*$/.test(material.id)) {
+      throw new Error("Visual orchestration material requires a stable ID");
+    }
+    const materialPath = path.resolve(jobRoot, material.path ?? "");
+    if (!isPathInside(inputRoot, materialPath)) {
+      throw new Error(`Visual orchestration material ${material.id} must stay inside input/`);
+    }
+    assertRegularContainedFile(inputRoot, materialPath, `Visual orchestration material ${material.id}`);
+    paths[`material:${material.id}`] = path.relative(jobRoot, materialPath).split(path.sep).join("/");
+  }
   return paths;
 };
 
@@ -227,7 +306,15 @@ export const assertCreativeAuthorities = (jobRoot, workflow, { requireApproved =
     }
   }
   const expected = computeCreativeAuthorities(jobRoot, workflow.captionMode);
+  const legacyMissingDesignSystemAuthority = !Object.hasOwn(workflow, "visualArrangementReviewRequired")
+    && !Object.hasOwn(confirmation.authorities ?? {}, "designSystem");
+  for (const name of Object.keys(confirmation.authorities ?? {})) {
+    if (!Object.hasOwn(expected, name)) {
+      throw new Error(`Creative authority drift: ${name}`);
+    }
+  }
   for (const [name, authority] of Object.entries(expected)) {
+    if (legacyMissingDesignSystemAuthority && name === "designSystem") continue;
     const recorded = confirmation.authorities?.[name];
     if (recorded?.path !== authority.path || recorded?.sha256 !== authority.sha256) {
       throw new Error(`Creative authority drift: ${name}`);

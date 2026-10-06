@@ -52,6 +52,12 @@
       "revealGroupMaxSkewFrames": 2
     }
   },
+  "subtitleMgCadence": {
+    "minimumDurationSeconds": 20,
+    "targetIntervalSeconds": 10,
+    "minimumPassageSeparationSeconds": 7,
+    "maximumUnexplainedGapSeconds": 12
+  },
   "captions": {
     "fontFamily": "Smiley Sans",
     "fontAsset": "assets/fonts/smiley-sans-oblique.woff2",
@@ -74,7 +80,7 @@
     }
   },
   "surface": {
-    "localizedGlassOnly": true,
+    "defaultTreatment": "direct-overlay",
     "fullFrameHazeAllowed": false,
     "dominantAccentCount": 1,
     "supportingAccentMaximum": 1,
@@ -86,6 +92,30 @@
     "connectorColorToken": "connector",
     "decorativeLabelsAllowed": false
   },
+  "motionProfiles": {
+    "thoughtful-editorial-v1": {
+      "defaultSurface": "direct-overlay",
+      "cueTiming": {
+        "referenceFps": 60,
+        "maxPreMotionFrames": 3,
+        "maxFirstLegibleDelayFrames": 6,
+        "maxSettledDelayFrames": 15,
+        "maxExitAfterTriggerFrames": 12,
+        "maxVisibleFramesByHoldKind": {
+          "standard": 210,
+          "evidence-reading": 300,
+          "causal-sequence": 270,
+          "rhetorical-pause": 240
+        }
+      },
+      "aAxis": {
+        "evidenceSurfaceMaxAreaRatio": 0.28,
+        "evidenceSurfaceMaxOpacity": 0.28,
+        "evidenceSurfaceMaxBackdropBlurPx": 8,
+        "minimumEvidenceSurfaceLightness": 0.55
+      }
+    }
+  },
   "axisPolicies": {
     "A": {
       "accumulation": "replace",
@@ -96,9 +126,9 @@
       "overlayZones": ["center", "side"],
       "faceCoverPolicy": "viewer-cognition-first",
       "surface": {
-        "kind": "localized-glass",
-        "opacityRange": [0.58, 0.76],
-        "maximumBackdropBlurPx": 18,
+        "kind": "direct-overlay",
+        "opacityRange": [0, 0],
+        "maximumBackdropBlurPx": 0,
         "fullFrame": false
       }
     },

@@ -25,7 +25,7 @@
   },
   "authorities": {},
   "changeControl": {
-    "implementationMayStartAfter": "creative-package-approved",
+    "implementationMayStartAfter": "visual-arrangement-approved",
     "planChangesRequireReapproval": true,
     "reapprovalFields": [
       "caption-segmentation",
@@ -36,7 +36,13 @@
       "visual-style",
       "primary-flow-axis",
       "visual-reference",
-      "axis-mode"
+      "axis-mode",
+      "mg-cadence",
+      "focal-placement",
+      "face-cover-rationale",
+      "materials",
+      "object-cues",
+      "visual-arrangement-table"
     ]
   },
   "axisPolicy": {
@@ -45,10 +51,10 @@
       "overlayZones": ["center", "side"],
       "faceProtection": "viewer-cognition-first",
       "surface": {
-        "kind": "localized-glass",
+        "kind": "direct-overlay",
         "fullFrame": false,
-        "opacityRange": [0.58, 0.76],
-        "backdropBlurPx": 14
+        "opacityRange": [0, 0],
+        "backdropBlurPx": 0
       }
     },
     "B": {

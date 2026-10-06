@@ -146,16 +146,6 @@ const assertFullOutputProbe = (manifest, probe, label) => {
   if (probe.audioStreamCount < 1) throw new Error(`${label} has no audio stream`);
 };
 
-const assertBasicOutputProbe = (manifest, probe, label) => {
-  const fps = numericRate(probe.streamSignature?.fps);
-  if (probe.width !== manifest.width || probe.height !== manifest.height) throw new Error(`${label} dimensions differ from Render Manifest`);
-  if (!Number.isFinite(fps) || Math.abs(fps - manifest.fps) > 0.001) throw new Error(`${label} FPS differs from Render Manifest`);
-  if (probe.audioStreamCount < 1) throw new Error(`${label} has no audio stream`);
-  if (!Number.isFinite(probe.duration) || Math.abs(probe.duration - manifest.duration) > 1 / manifest.fps) {
-    throw new Error(`${label} duration differs from Render Manifest`);
-  }
-};
-
 function assertCurrentManifest(jobRoot, manifest, mode = manifest.chunks?.length ? "chunked" : "monolithic") {
   const current = deriveRenderManifest(jobRoot, {
     mode,
@@ -413,7 +403,6 @@ const renderMonolithic = (
   outputPath,
   binary,
   manifest,
-  workflow,
   reason,
   { mode = "monolithic" } = {}
 ) => {
@@ -434,11 +423,8 @@ const renderMonolithic = (
       "."
     ], { cwd: path.join(jobRoot, "hyperframes"), stdio: "inherit", label: `HyperFrames ${quality} monolithic render` });
     assertCurrentManifest(jobRoot, manifest, mode);
-    const fullAudit = workflow.mode === "auto" || workflow.roughCutReviewDecision === "automatic-fallback";
-    const detailedProbe = fullAudit || mode === "chunked";
-    const probe = probeVideoArtifact(temporaryPath, { detailed: detailedProbe });
-    if (detailedProbe) assertFullOutputProbe(manifest, probe, "Monolithic render");
-    else assertBasicOutputProbe(manifest, probe, "Monolithic render");
+    const probe = probeVideoArtifact(temporaryPath);
+    assertFullOutputProbe(manifest, probe, "Monolithic render");
     promoteRenderedCandidate(jobRoot, manifest, temporaryPath, outputPath, { mode });
     const receipt = {
       schemaVersion: "2.0.0",
@@ -450,8 +436,8 @@ const renderMonolithic = (
       totalFrames: manifest.totalFrames,
       streamSignature: probe.streamSignature
     };
-    if (detailedProbe) writeJsonAtomic(assemblyReceiptPath(outputPath), receipt);
-    return { mode: "monolithic", outputPath, manifest, receipt: detailedProbe ? receipt : null, reason };
+    writeJsonAtomic(assemblyReceiptPath(outputPath), receipt);
+    return { mode: "monolithic", outputPath, manifest, receipt, reason };
   } finally {
     if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
   }
@@ -475,7 +461,6 @@ const prepareRender = (jobRootInput, quality, outputPathInput, requestedMode) =>
   const outputPath = path.resolve(outputPathInput);
   validateRenderOutputPath(jobRoot, quality, outputPath);
   const binary = resolveLockedHyperframesCli(jobRoot).binaryPath;
-  const workflow = readJson(path.join(jobRoot, "state", "workflow.json"));
   const templatePath = path.join(jobRoot, "hyperframes", "index.template.html");
   if (!fs.existsSync(templatePath)) throw new Error("Render requires hyperframes/index.template.html");
 
@@ -487,16 +472,15 @@ const prepareRender = (jobRootInput, quality, outputPathInput, requestedMode) =>
     jobRoot,
     outputPath,
     binary,
-    workflow,
     manifest,
     quality,
     renderMode
   };
 };
 
-const renderPreparedChunked = ({ jobRoot, outputPath, binary, workflow, manifest, quality }) => {
+const renderPreparedChunked = ({ jobRoot, outputPath, binary, manifest, quality }) => {
   if (!singlePassAudioSupported(jobRoot, manifest)) {
-    return renderMonolithic(jobRoot, quality, outputPath, binary, manifest, workflow, "non-pass-through-audio-graph", {
+    return renderMonolithic(jobRoot, quality, outputPath, binary, manifest, "non-pass-through-audio-graph", {
       mode: "chunked"
     });
   }
@@ -535,7 +519,6 @@ export const renderOutput = (jobRootInput, quality, outputPathInput, { mode = "a
       prepared.outputPath,
       prepared.binary,
       prepared.manifest,
-      prepared.workflow,
       "default-monolithic",
       { mode: "monolithic" }
     );

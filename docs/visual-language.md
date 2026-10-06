@@ -51,7 +51,7 @@ Do not reduce primary copy below these ranges to rescue a bad layout. Recompose 
 
 ## Density and rhythm
 
-- In `motion-copy`, active speech should produce a meaningful visual response every 0.35–0.9 seconds. In `subtitles`, this cadence applies only inside approved local MG.
+- In `motion-copy`, active speech should produce a meaningful visual response every 0.35–0.9 seconds. In `subtitles`, this cadence applies only inside approved local MG; for default-policy videos of at least 20 seconds, meaningful local-MG passages cover roughly one per 10 seconds, with a 7-second minimum start separation and documented exceptions for any no-MG gap beyond 12 seconds.
 - Major layout changes should normally be 1.8–3.5 seconds apart.
 - One primary focal group plus one to four support elements is the default density.
 - Primary content normally occupies 28–65% of vertical frame area.

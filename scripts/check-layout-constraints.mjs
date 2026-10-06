@@ -20,6 +20,56 @@ const errors = [];
 const typography = designSystem.typography ?? {};
 const bAxisPolicy = designSystem.axisPolicies?.B ?? {};
 const motionContract = designSystem.motionContract ?? {};
+const attribute = (tag, name) => new RegExp(`(?:^|\\s)${name}=["']([^"']*)["']`, "i").exec(tag)?.[1];
+const scopedCss = (scopeId) => {
+  const marker = `@scope (#${scopeId}) {`;
+  const start = composition.indexOf(marker);
+  if (start === -1) return "";
+  const open = composition.indexOf("{", start);
+  let depth = 0;
+  for (let index = open; index < composition.length; index += 1) {
+    if (composition[index] === "{") depth += 1;
+    if (composition[index] === "}") {
+      depth -= 1;
+      if (depth === 0) return composition.slice(open + 1, index);
+    }
+  }
+  return "";
+};
+const sectionContents = (id) => {
+  const opening = new RegExp(`<section\\b(?=[^>]*\\bid=["']${id}["'])[^>]*>`, "i").exec(composition);
+  if (!opening || opening.index === undefined) return "";
+  const sectionTag = /<\/?section\b[^>]*>/gi;
+  sectionTag.lastIndex = opening.index + opening[0].length;
+  let depth = 1;
+  for (let match; (match = sectionTag.exec(composition));) {
+    if (/^<\/section\b/i.test(match[0])) depth -= 1;
+    else depth += 1;
+    if (depth === 0) return composition.slice(opening.index, match.index + match[0].length);
+  }
+  return "";
+};
+const sectionInnerContents = (id) => {
+  const section = sectionContents(id);
+  const opening = /^<section\b[^>]*>/i.exec(section)?.[0];
+  if (!opening) return "";
+  return section.slice(opening.length, section.lastIndexOf("</section>"));
+};
+const stripCssComments = (source) => source.replace(/\/\*[^]*?\*\//g, "");
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const thoughtfulCssRules = (source) => {
+  if (/::|:(?:before|after|first-line|first-letter|selection|backdrop|marker|placeholder|file-selector-button)\b/i.test(source)
+    || /@(?:[a-z-]+)\b/i.test(source)) return null;
+  const rulePattern = /([^{}]+)\{([^{}]*)\}/g;
+  const rules = [...source.matchAll(rulePattern)].map((match) => ({
+    selector: match[1].trim(),
+    declarations: match[2]
+  }));
+  return source.replace(rulePattern, "").trim() ? null : rules;
+};
+const onlyEvidenceSurfaceSelectors = (selector) => selector.split(",")
+  .every((part) => part.trim() === ".evidence-surface");
+const sourceBearingTag = /<[a-z][a-z0-9:-]*\b[^>]*(?:\s(?:src|srcset|poster|href|xlink:href|data)\s*=)[^>]*>/i;
 
 if (typography.orphanLineAllowed !== false || typography.minimumLastLineCharacters < 2) {
   errors.push("design system must forbid single-character orphan lines");
@@ -39,21 +89,92 @@ if (!composition.includes('timeline.eventCallback("onUpdate", () => {')
 if (motionContract.outerFrameAllowed !== false || motionContract.containerBorderPolicy !== "none") errors.push("design system must forbid generic outer frames and container borders");
 if (!composition.includes(`--${motionContract.connectorColorToken}:`)) errors.push("composition must define the connector color token");
 
-for (const match of composition.matchAll(/<[^>]+data-motion-surface=["']container["'][^>]*>/gi)) {
+for (const match of composition.matchAll(/<[a-z][a-z0-9:-]*\b[^>]*data-motion-surface=["']container["'][^>]*>/gi)) {
   if (!/data-border-policy=["']none["']/i.test(match[0])) errors.push("motion containers must declare border-policy none");
 }
-for (const match of composition.matchAll(/<[^>]+data-motion-role=["']connector["'][^>]*>/gi)) {
+for (const wrapper of composition.matchAll(/<section\b(?=[^>]*\bdata-motion-profile=["']thoughtful-editorial-v1["'])[^>]*>/gi)) {
+  const wrapperTag = wrapper[0];
+  const wrapperId = attribute(wrapperTag, "id");
+  const treatment = attribute(wrapperTag, "data-surface-treatment");
+  if (!wrapperId || !["direct-overlay", "evidence-surface"].includes(treatment)) {
+    errors.push("thoughtful-editorial-v1 wrappers must declare a valid surface treatment");
+    continue;
+  }
+  const fragment = sectionInnerContents(wrapperId);
+  const css = stripCssComments(scopedCss(wrapperId));
+  const profileCssRules = thoughtfulCssRules(css);
+  const structuralRoot = [...fragment.matchAll(/<[a-z][a-z0-9:-]*\b[^>]*data-beat-id=["'][^"']+["'][^>]*>/gi)][0]?.[0] ?? "";
+  if (!structuralRoot || attribute(structuralRoot, "class") || attribute(structuralRoot, "id")) {
+    errors.push("thoughtful-editorial-v1 data-beat structural root must remain an unstyled wrapper");
+  }
+  if (!profileCssRules) {
+    errors.push("thoughtful-editorial-v1 CSS must use flat non-pseudo selector rules only");
+  } else {
+    if (profileCssRules.some(({ selector }) => /\[\s*data-beat-id\b|:scope\b/i.test(selector)
+      || new RegExp(`#${escapeRegex(wrapperId)}\\b`, "i").test(selector))) {
+      errors.push("thoughtful-editorial-v1 CSS cannot target the structural data-beat root or generated wrapper");
+    }
+    if (profileCssRules.some(({ selector, declarations }) => (
+      /\b(?:background(?:-[a-z]+)?|box-shadow|overflow(?:-[a-z]+)?)\s*:/i.test(declarations)
+        && treatment === "evidence-surface"
+        && !onlyEvidenceSurfaceSelectors(selector)
+    ))) {
+      errors.push("thoughtful-editorial-v1 evidence visual treatment belongs only on the bounded evidence-surface");
+    }
+  }
+  const surfaceTags = [...fragment.matchAll(/<[a-z][a-z0-9:-]*\b[^>]*data-motion-surface=["']container["'][^>]*>/gi)].map((match) => match[0]);
+  if (treatment === "direct-overlay") {
+    if (surfaceTags.length !== 1 || attribute(surfaceTags[0] ?? "", "data-surface-kind") !== "direct-overlay") {
+      errors.push("thoughtful-editorial-v1 direct-overlay requires exactly one declared direct-overlay surface");
+    }
+    if (/\sstyle\s*=/i.test(fragment)
+      || sourceBearingTag.test(fragment)
+      || /\bbackground(?:-[a-z]+)?\s*:|\boverflow(?:-[a-z]+)?\s*:|\b(?:box-shadow|text-shadow|border|outline)(?:-[a-z]+)?\s*:|\bposition\s*:\s*fixed\b|\b(?:filter|backdrop-filter|transition)(?:-[a-z]+)?\s*:/i.test(css)) {
+      errors.push("thoughtful-editorial-v1 direct-overlay surface must remain transparent and unblurred");
+    }
+  } else {
+    const materialIds = new Set((attribute(wrapperTag, "data-material-ids") ?? "").split(",").filter(Boolean));
+    const evidenceSurface = surfaceTags[0] ?? "";
+    const surfaceMaterialIds = new Set([
+      ...(attribute(evidenceSurface, "data-material-ids") ?? "").split(","),
+      attribute(evidenceSurface, "data-material-id") ?? ""
+    ].filter(Boolean));
+    if (surfaceTags.length !== 1
+      || attribute(evidenceSurface, "data-surface-kind") !== "evidence-surface"
+      || attribute(evidenceSurface, "data-evidence-surface-bounded") !== "true"
+      || surfaceMaterialIds.size === 0
+      || [...surfaceMaterialIds].some((materialId) => !materialIds.has(materialId))
+      || !/(?:^|\s)class=["'][^"']*\bevidence-surface\b[^"']*["']/i.test(evidenceSurface)
+      || !/\.evidence-surface\b\s*\{[^}]*\boverflow\s*:\s*(?:hidden|clip)\b[^}]*\}/i.test(css)
+      || /\sstyle\s*=/i.test(fragment)
+      || /\b(?:filter|backdrop-filter|transition|box-shadow|text-shadow|border|outline)(?:-[a-z]+)?\s*:/i.test(css)
+      || /\bposition\s*:\s*fixed\b/i.test(css)
+      || /\b(?:url|image-set)\s*\(/i.test(css)) {
+      errors.push("thoughtful-editorial-v1 evidence-surface requires exactly one bounded surface tied to declared material IDs");
+    }
+    const assetTags = [...fragment.matchAll(/<[a-z][a-z0-9:-]*\b[^>]*(?:\s(?:src|srcset|poster|href|xlink:href|data)\s*=)[^>]*>/gi)].map((match) => match[0]);
+    const imageTags = assetTags.filter((tag) => /^<img\b/i.test(tag));
+    if (assetTags.length === 0
+      || assetTags.length !== imageTags.length
+      || imageTags.some((tag) => !/\ssrc=["'][^"']+["']/i.test(tag)
+        || /\s(?:srcset|poster|href|xlink:href|data)\s*=/i.test(tag)
+        || !/\sdata-material-id=["'][^"']+["']/i.test(tag))) {
+      errors.push("thoughtful-editorial-v1 evidence-surface must use literal img data-material-id src elements only");
+    }
+  }
+}
+for (const match of composition.matchAll(/<[a-z][a-z0-9:-]*\b[^>]*data-motion-role=["']connector["'][^>]*>/gi)) {
   if (!new RegExp(`data-color-token=["']${motionContract.connectorColorToken}["']`, "i").test(match[0])) errors.push("connectors must use the design-system connector token");
   if (!/data-color-property=["'](color|background-color|border-color)["']/i.test(match[0])) errors.push("connectors must declare the computed color property");
   if (!/data-reveal-group=["'][^"']+["']/i.test(match[0])) errors.push("connectors must declare a runtime reveal group");
   if (!/data-flow-axis=["'](horizontal|vertical)["']/i.test(match[0])) errors.push("connectors must declare their rendered flow axis");
 }
-for (const match of composition.matchAll(/<[^>]+data-motion-role=["']label["'][^>]*>/gi)) {
+for (const match of composition.matchAll(/<[a-z][a-z0-9:-]*\b[^>]*data-motion-role=["']label["'][^>]*>/gi)) {
   if (!informationRolePattern.test(match[0])) {
     errors.push(`labels must declare data-information-role as one of: ${informationRoles.join(", ")}`);
   }
 }
-for (const match of composition.matchAll(/<[^>]+data-motion-group=["'][^"']+["'][^>]*>/gi)) {
+for (const match of composition.matchAll(/<[a-z][a-z0-9:-]*\b[^>]*data-motion-group=["'][^"']+["'][^>]*>/gi)) {
   for (const declaration of [
     /data-axis=["'](A|B)["']/i,
     /data-group-kind=["'](primary|auxiliary)["']/i,
@@ -92,7 +213,7 @@ if (designSystem.captions) {
   }
 }
 
-for (const match of composition.matchAll(/<[^>]+class=["']([^"']+)["'][^>]*>/gi)) {
+for (const match of composition.matchAll(/<[a-z][a-z0-9:-]*\b[^>]*class=["']([^"']+)["'][^>]*>/gi)) {
   const classes = match[1].split(/\s+/);
   if (classes.some((name) => /(?:^|-)(?:card|panel)$/.test(name)) && !/data-motion-surface=["']container["']/i.test(match[0])) {
     errors.push("card and panel classes must declare a checked motion surface");

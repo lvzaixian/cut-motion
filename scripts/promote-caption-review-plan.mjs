@@ -19,6 +19,9 @@ const resolvedCues = resolveCaptionCues(reviewPlan, transcript);
 const pages = JSON.parse(fs.readFileSync(path.join(jobDirectory, "captions", "chatcut-pages.json"), "utf8"));
 const designSystem = JSON.parse(fs.readFileSync(path.join(jobDirectory, "state", "design-system.json"), "utf8"));
 const fps = pages.fps;
+if (pages.roughCutLocked !== true || pages.captionRenderDisabled !== true || typeof pages.cleanExport !== "string" || !pages.cleanExport) {
+  throw new Error("Caption promotion requires locked clean ChatCut timing evidence");
+}
 const cues = resolvedCues.map((cue) => {
   const startFrame = Math.max(0, Math.round(cue.start * fps));
   const endFrame = Math.max(startFrame + 1, Math.round(cue.end * fps));
@@ -41,8 +44,8 @@ const captions = {
     fps,
     cleanExport: pages.cleanExport,
     timelineVersion: pages.timelineVersion ?? null,
-    roughCutLocked: true,
-    captionRenderDisabled: true
+    roughCutLocked: pages.roughCutLocked,
+    captionRenderDisabled: pages.captionRenderDisabled
   },
   style: designSystem.captions,
   cues

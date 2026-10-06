@@ -1,6 +1,18 @@
 # Talking-Head Precision Trim Standard
 
-This is cut-motion's automatic-fallback standard for direct-to-camera talking-head videos. The default `review` workflow first lets the user inspect the live ChatCut timeline; this standard is not run until the user selects `fallback-auto`.
+This standard combines editorial selection used in every talking-head job with precision seam checks used only for automatic fallback or an explicit audit. In default `review`, apply the content and take-selection guidance, let the user inspect the live ChatCut timeline, and do not run the full automatic seam audit before that decision.
+
+## Content before cuts
+
+Transcribe and parse the entire recording before selecting clips, whether or not a script exists. Use `docs/content-analysis.md` to map the main claim, hook, narrative order, source times, setup dependencies and retry groups. Logical completeness comes before personal delivery, which comes before compact pacing. At every join, ask whether the incoming statement still has its premise. Protect the speaker’s background and relevant life context, transitions into a point, explanatory premises and emphasis such as “你没有听错，是限制学习时间”. Do not remove these merely because their words resemble earlier material.
+
+## Unscripted wording and performance pass
+
+Follow [the unscripted talking-head standard](unscripted-talking-head-standard.md) when no reference script exists. Keep the raw ASR distinct from the recording-reconciled transcript; collect known wording ambiguities in the content-analysis template and resolve them together before formal caption segmentation. Preserve confirmed spoken wording even when it is less grammatical than an editorial rewrite. Do not convert that rewrite into a reference script or claim that automatic retranscription is human listening.
+
+Before showing the first rough cut, inspect identified hesitations and restarts in both sound and moving picture, then review visible continuity of the selected delivery for remaining sentence-internal resets. Treat an empty filler plus gaze/body reset as one candidate removal interval. Protect neighboring phonemes and meaningful speech; normal blinks, ordinary eye movements, and purposeful pauses remain contextual decisions. Record actual review coverage and capability gaps. This is editorial preparation in review mode, not the full automatic seam audit.
+
+For user timecoded feedback, record which source/rough-cut/delivery version, FPS and rate the time refers to; localize it with surrounding speech and the active source mapping. Recalculate after cuts or rate changes instead of applying stale seconds or silently interpreting a frame timecode as decimal seconds.
 
 ## Default profile
 
@@ -36,9 +48,15 @@ Cut to the acoustic boundary when the speaker has stopped delivering and entered
 
 These guide ChatCut selection and Agent judgment. They do not add schema fields, validator failures, or review gates.
 
-- **Repeated expression:** remove repetitions that add no information. Choose the take with the best completeness, accuracy, fluency, performance, and visual continuity; prefer the later take only when quality is otherwise comparable. Preserve intentional emphasis, recap, and comic repetition.
+- **Repeated expression:** remove repetitions that add no information. For genuine retries of the same content, select the final complete take by default: stopping the retries signals the speaker’s acceptance. Shorter duration, smoother delivery or a preferred expression in an earlier take is not sufficient to override this. Only concrete incompleteness, a mistake or content loss in the later attempt justifies an evidenced fallback. Keep necessary unique context separately; do not splice earlier and later wording to invent a take. Preserve intentional emphasis, recap, and comic repetition.
+- **Fillers and emphasis:** judge “然后”, “其实” and similar words in context. Remove empty hesitation or consecutive redundant starts; keep words that signal a turn, emphasis or personal voice. Preserve a meaningful pause after a key point or between sections instead of applying a uniform silence target.
+- **Pickups and speed:** assess picture, loudness, tone and semantic continuity before inserting a pickup. Omit an unnecessary pickup that disrupts continuity. Choose and lock speed per video with the rough-cut review; a prior 1.25× decision is not a universal default.
 - **Correction and restart:** remove confirmed slips, failed openings, and production chatter such as requests to restart, then keep the successful delivery. Preserve meaningful negation, contrast, and rhetorical self-correction.
 - **Breath and pacing:** remove reading, searching, restart preparation, and empty delay while retaining natural breath and pauses needed for comprehension or emphasis. Prefer a conservative boundary when a tighter cut creates a distracting gaze, mouth, or posture jump.
+
+## Reference-aligned complete-take selection
+
+For a new ChatCut job, `state/roughcut-selection.json` is the hard record before the review gate. It binds the immutable source-transcript and reconciliation hashes, the optional reference-script hash, the SHA-256 of the current `state/chatcut-roughcut.json`, a `verifiedAt` timestamp no earlier than that record's `recordedAt`, and the active ChatCut project/timeline. Any ChatCut mutation must update that record and regenerate the selection. Every recording-backed reconciliation source segment is classified exactly once as a candidate take or an audio-reviewed discard, and every candidate—including the selected complete take—has nonempty audio-reviewed evidence. A `releaseImpact: true` source segment cannot be discarded. A reference-backed item cannot be discarded and must occur in exactly one selected semantic group and its selected complete take. Only an item whose reconciliation resolution is explicitly `omitted-unspoken` is exempt from that selected coverage. Within each group, select the latest chronological `complete` take; a later unselected candidate is allowed only when it is explicitly `later-incomplete`, `later-mistake`, or `later-content-loss` with audio-reviewed evidence. Repeated takes stay in that group rather than being hidden as a generic discard. `ffmpeg-fallback` requires `project.roughCutEngine: "ffmpeg-fallback"`; any job that still contains `state/roughcut-selection.json` additionally requires the V1 origin and user-only `waive-v1-roughcut-selection-for-ffmpeg-fallback` record at entry and review decision. Only a historic workflow without that file may use legacy null fallback.
 
 ## Seam classification
 

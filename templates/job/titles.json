@@ -1,0 +1,22 @@
+{
+  "$schema": "../../../schemas/titles.schema.json",
+  "schemaVersion": "1.0.0",
+  "status": "pending",
+  "sourceDelivery": {
+    "path": null,
+    "sha256": null
+  },
+  "workbook": {
+    "path": "output/titles.xlsx",
+    "sha256": null
+  },
+  "publicLanguageReviewed": false,
+  "platforms": [
+    { "id": "douyin", "displayName": "抖音", "candidates": [] },
+    { "id": "video-account", "displayName": "视频号", "candidates": [] },
+    { "id": "xiaohongshu", "displayName": "小红书", "candidates": [] },
+    { "id": "bilibili", "displayName": "B站", "candidates": [] },
+    { "id": "kuaishou", "displayName": "快手", "candidates": [] }
+  ],
+  "generatedAt": null
+}

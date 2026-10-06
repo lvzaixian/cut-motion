@@ -19,12 +19,12 @@ The Agent checks the local environment first. If anything needs to be installed 
 
 ## What happens next
 
-1. You provide the local path to the talking-head video.
-2. The Agent transcribes it, removes mistakes, repeated takes, reading pauses, and unnecessary dead air.
-3. You review the first edited version and the Agent's recommended caption and visual treatment.
-4. When animation needs approval, the Agent presents one visual plan with the storyboard, wording, timing, and style.
-5. You review the finished preview. After approval, the Agent creates the high-quality final video and tells you its exact file location.
-6. If you request changes later, the Agent only redoes the affected parts instead of starting over.
+1. You provide the local recording; the Agent checks media and records preferences.
+2. The Agent transcribes the full recording with ChatCut or the existing local mlx-whisper tool, reconciles wording, and maps the narrative, setup dependencies and repeated takes before editing—even when a script exists.
+3. With the content understood, you select one of 24 source frames and then one of six complete standalone cover options.
+4. ChatCut builds the editable rough cut around the narrative. Repeated attempts use the last complete take by default; meaningful setup and emphasis remain. You review the timeline, pacing and playback speed.
+5. In default review mode, you approve the planned captions, supporting assets and motion before HyperFrames composition and rendering.
+6. You receive the cover, final video and five-platform title workbook for inspection. Later revisions target the affected parts; automatic checks require explicit auto mode and do not substitute for creative approval or authorize publishing.
 
 ## Two caption styles
 

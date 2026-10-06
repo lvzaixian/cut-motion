@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "cut-motion Rough-cut Selection",
+  "type": "object",
+  "required": ["schemaVersion", "policy", "sourceTranscriptSha256", "transcriptReconciliationSha256", "referenceScriptSha256", "chatcutRoughCutSha256", "verifiedAt", "chatcut", "selections", "discards"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": "1.0.0" },
+    "policy": { "const": "reference-aligned-last-complete-take-v1" },
+    "sourceTranscriptSha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+    "transcriptReconciliationSha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+    "referenceScriptSha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+    "chatcutRoughCutSha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+    "verifiedAt": { "type": ["string", "null"], "format": "date-time" },
+    "chatcut": {
+      "type": "object",
+      "required": ["projectId", "activeTimelineId"],
+      "properties": {
+        "projectId": { "type": ["string", "null"] },
+        "activeTimelineId": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "selections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["referenceItemIds", "takes", "selectedTakeId"],
+        "properties": {
+          "referenceItemIds": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "takes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["id", "sourceSegmentIds", "disposition", "audioReviewedEvidence"],
+              "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "sourceSegmentIds": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": { "type": "string", "minLength": 1 }
+                },
+                "disposition": { "enum": ["complete", "later-incomplete", "later-mistake", "later-content-loss"] },
+                "audioReviewedEvidence": { "type": "string", "minLength": 1 }
+              },
+              "additionalProperties": false
+            }
+          },
+          "selectedTakeId": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "discards": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["sourceSegmentIds", "disposition", "audioReviewedEvidence"],
+        "properties": {
+          "sourceSegmentIds": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "disposition": { "enum": ["false-start", "filler", "production-reset", "technical-failure", "off-topic", "non-speech", "body-reset", "restart"] },
+          "audioReviewedEvidence": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

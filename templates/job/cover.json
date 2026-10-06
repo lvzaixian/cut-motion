@@ -1,0 +1,44 @@
+{
+  "$schema": "../../../schemas/cover.schema.json",
+  "schemaVersion": "2.1.0",
+  "status": "pending",
+  "styleId": "talking-head-opinion-poster-v2",
+  "sourceVideo": null,
+  "frameCandidates": [],
+  "coverBase": {
+    "sourceFrameId": null,
+    "crop": null,
+    "method": null,
+    "path": null,
+    "sha256": null,
+    "width": 1080,
+    "height": 1440
+  },
+  "renderedCandidates": [],
+  "selection": {
+    "frameId": null,
+    "renderedCandidateId": null
+  },
+  "visualReview": {
+    "subjectIntegrity": false,
+    "headlineAboveEyes": false,
+    "thumbnailReadable": false,
+    "noOpaqueTextBackdrop": false,
+    "noDarkGradient": false,
+    "safeAreaChecked": false
+  },
+  "publicLanguageReviewed": false,
+  "output": {
+    "path": "output/cover.png",
+    "sha256": null,
+    "width": 1080,
+    "height": 1440,
+    "colorSpace": "sRGB"
+  },
+  "review": {
+    "status": "pending",
+    "actor": null,
+    "decidedAt": null,
+    "note": null
+  }
+}
