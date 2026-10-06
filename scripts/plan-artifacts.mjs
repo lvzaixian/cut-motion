@@ -8,7 +8,7 @@
  * defaults) is derived here so it cannot drift between jobs.
  */
 import { sha256File } from "./workflow-utils.mjs";
-import { resolveComponent, DEFAULT_MG_TOP_PX } from "./motion-template-library.mjs";
+import { resolveComponent, DEFAULT_MG_TOP_PX, templateMicroEvents } from "./motion-template-library.mjs";
 import { normalizeCaptionText } from "./caption-review-utils.mjs";
 import { chatcutPages, correctCaptionText, deriveCaptionCues } from "./chatcut-caption-data.mjs";
 
@@ -287,8 +287,8 @@ const DEFAULT_RULES = {
   exactlyOneLine: true,
   minimumDurationSeconds: 0.5,
   targetDurationSeconds: [0.8, 2.5],
-  targetDisplayUnits: [4, 10],
-  maximumDisplayUnits: 10,
+  targetDisplayUnits: [4, 10.5],
+  maximumDisplayUnits: 11.8,
   fitFontSizePx: [88, 96],
   noPunctuation: true
 };
@@ -444,7 +444,7 @@ const applyComponentDefaults = (beat) => {
   if (beat.templateId && beat.templateId !== "custom" && !component) throw new Error(`${beat.id}: unknown templateId ${beat.templateId}`);
   if (!component) return beat;
   beat.templateId = component.meta.name;
-  if (component.meta.defaultTopPx !== undefined) {
+  if (beat.motionProfile !== "thoughtful-editorial-v1" && component.meta.defaultTopPx !== undefined) {
     beat.templateData = { topPx: component.meta.defaultTopPx, ...beat.templateData };
   }
   const content = component.content(beat);
@@ -499,7 +499,10 @@ export const buildBeatMap = ({
   captionMode,
   designSystemPath = "state/design-system.json",
   designSystem,
-  fps = 30
+  fps = 30,
+  visualOrchestrationVersion,
+  materials,
+  mgCadenceExceptions
 }) => {
   const typography = {
     fontFamily: designSystem.typography.displayFamily,
@@ -514,6 +517,9 @@ export const buildBeatMap = ({
     fps,
     captionMode,
     designSystem: designSystemPath,
+    ...(visualOrchestrationVersion === undefined ? {} : { visualOrchestrationVersion }),
+    ...(materials === undefined ? {} : { materials }),
+    ...(mgCadenceExceptions === undefined ? {} : { mgCadenceExceptions }),
     beats: beats.map((beat) => {
       const out = { ...beat };
       if (beat.templateData?.revealCues) out.templateData = { ...beat.templateData,
@@ -532,6 +538,9 @@ export const buildBeatMap = ({
       if (out.motionFamily === undefined) out.motionFamily = CAPTION_ONLY.motionFamily;
       if (out.transitionFamily === undefined) out.transitionFamily = out.mgScope === "local" ? "custom" : CAPTION_ONLY.transitionFamily;
       if (out.mgScope === "local") {
+        if (visualOrchestrationVersion && out.materialRefs === undefined) out.materialRefs = [];
+        if (out.templateId && out.templateId !== "custom" && out.components === undefined) out.components = [];
+        if (out.motionProfile === "thoughtful-editorial-v1" && out.objectCues && out.microEvents === undefined) out.microEvents = templateMicroEvents(out, fps);
         out.typography = { ...typography, ...out.typography };
         out.layout = {
           ...DEFAULT_LAYOUT,

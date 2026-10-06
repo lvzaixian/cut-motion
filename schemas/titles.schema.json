@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "cut-motion Title Package",
+  "type": "object",
+  "required": ["schemaVersion", "status", "sourceDelivery", "workbook", "publicLanguageReviewed", "platforms", "generatedAt"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": "1.0.0" },
+    "status": { "enum": ["pending", "ready"] },
+    "sourceDelivery": {
+      "type": "object",
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": ["string", "null"] },
+        "sha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" }
+      },
+      "additionalProperties": false
+    },
+    "workbook": {
+      "type": "object",
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "const": "output/titles.xlsx" },
+        "sha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" }
+      },
+      "additionalProperties": false
+    },
+    "publicLanguageReviewed": { "type": "boolean" },
+    "platforms": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "required": ["id", "displayName", "candidates"],
+        "properties": {
+          "id": { "enum": ["douyin", "video-account", "xiaohongshu", "bilibili", "kuaishou"] },
+          "displayName": { "type": "string", "minLength": 1 },
+          "candidates": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "type": "object",
+              "required": ["id", "title", "keywords", "hookType", "contentSupport"],
+              "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "title": { "type": "string", "minLength": 1 },
+                "keywords": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+                "hookType": { "type": "string", "minLength": 1 },
+                "contentSupport": { "type": "string", "minLength": 1 }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "generatedAt": { "type": ["string", "null"] }
+  },
+  "additionalProperties": false
+}

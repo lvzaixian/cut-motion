@@ -1,6 +1,16 @@
+const serializedFrameTolerance = (fps) => (Number(fps) * 0.5e-6) + 1e-9;
+
+const snappedFrameProduct = (seconds, fps) => {
+  const product = Number(seconds) * fps;
+  const nearestFrame = Math.round(product);
+  return Math.abs(product - nearestFrame) <= serializedFrameTolerance(fps) ? nearestFrame : product;
+};
+
+export const durationToFrames = (duration, fps) => Math.ceil(snappedFrameProduct(duration, fps));
+
 export const quantizeFrameWindow = (start, end, fps, totalFrames) => ({
-  startFrame: Math.max(0, Math.min(totalFrames, Math.floor(Number(start) * fps))),
-  endFrame: Math.max(0, Math.min(totalFrames, Math.ceil(Number(end) * fps)))
+  startFrame: Math.max(0, Math.min(totalFrames, Math.floor(snappedFrameProduct(start, fps)))),
+  endFrame: Math.max(0, Math.min(totalFrames, Math.ceil(snappedFrameProduct(end, fps))))
 });
 
 export const captionFrameWindow = (cue, totalFrames = Number.POSITIVE_INFINITY) => {

@@ -4,7 +4,7 @@ set -euo pipefail
 # Put a licensed display font into a job without hunting for it each time.
 #
 # Usage:
-#   scripts/install-font.sh <job-directory> [--from <font-file>] [--download] [--force] [--quiet]
+#   scripts/install-font.sh <job-directory> [--from <font-file>] [--download --yes] [--force] [--quiet]
 #
 # Resolution order: --from, then the repository cache under assets/fonts/, then the
 # fonts already installed in another job's hyperframes directory, then an explicit
@@ -18,7 +18,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/install-font.sh <job-directory> [--from <font-file>] [--download] [--force] [--quiet]
+Usage: scripts/install-font.sh <job-directory> [--from <font-file>] [--download --yes] [--force] [--quiet]
 
 Installs the design system's display font into a job and repoints
 state/design-system.json at it. Exits 0 when the font is in place, 1 when no usable
@@ -32,13 +32,15 @@ shift || true
 
 font_source=""
 allow_download=""
+approval=""
 force=""
 quiet=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --from) font_source="${2:-}"; shift 2 ;;
+    --from) [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { usage >&2; exit 64; }; font_source="$2"; shift 2 ;;
     --download) allow_download=1; shift ;;
+    --yes) approval=1; shift ;;
     --force) force=1; shift ;;
     --quiet) quiet=1; shift ;;
     -h|--help|help) usage; exit 0 ;;
@@ -50,19 +52,35 @@ script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repository_root="$(cd "${script_directory}/.." && pwd)"
 job_directory="$(cd "$job_directory" && pwd)"
 hyperframes_directory="${job_directory}/hyperframes"
-cache_directory="${repository_root}/assets/fonts"
+cache_directory="${CUT_MOTION_FONT_CACHE:-${repository_root}/assets/fonts}"
+if [[ -z "${CUT_MOTION_FONT_CACHE:-}" && -d "$repository_root/../口播/.cut-motion" ]]; then
+  cache_directory="$repository_root/../口播/.cut-motion/fonts"
+fi
 download_url="${CUT_MOTION_FONT_URL:-https://github.com/atelier-anchor/smiley-sans/releases/latest/download/smiley-sans-v2.0.1.zip}"
 
-[[ -d "$hyperframes_directory" ]] || { echo "Missing HyperFrames directory: $hyperframes_directory" >&2; exit 66; }
+[[ -d "$hyperframes_directory" && ! -L "$hyperframes_directory" ]] || { echo "Missing HyperFrames directory: $hyperframes_directory" >&2; exit 66; }
 for tool in node jq; do command -v "$tool" >/dev/null 2>&1 || { echo "$tool is required" >&2; exit 69; }; done
 
 design_system="${job_directory}/state/design-system.json"
 [[ -f "$design_system" ]] || design_system="${repository_root}/assets/design-system.default.json"
-[[ -f "$design_system" ]] || { echo "No design system found to read the font asset from" >&2; exit 66; }
+[[ -f "$design_system" && ! -L "$design_system" ]] || { echo "No design system found to read the font asset from" >&2; exit 66; }
 
 font_asset="$(jq -r '.typography.fontAsset // empty' "$design_system")"
 [[ -n "$font_asset" ]] || { echo "Design system does not declare typography.fontAsset" >&2; exit 66; }
 font_family="$(jq -r '.typography.displayFamily // "display font"' "$design_system")"
+validate_target() {
+node -e '
+  const fs=require("fs"),path=require("path");
+  const root=fs.realpathSync(process.argv[1]),target=path.resolve(root,process.argv[2]);
+  const inside=p=>{const rel=path.relative(root,p);return rel&&!rel.startsWith("..")&&!path.isAbsolute(rel)};
+  if (!inside(target)) process.exit(1);
+  let ancestor=path.dirname(target);while(!fs.existsSync(ancestor)) ancestor=path.dirname(ancestor);
+  if (fs.realpathSync(ancestor)!==root&&!inside(fs.realpathSync(ancestor))) process.exit(1);
+' "$hyperframes_directory" "$font_asset" || { echo "Font asset must stay inside this job" >&2; exit 66; }
+  local target="${hyperframes_directory}/${font_asset}"
+  [[ ! -L "$target" && ! -L "$(dirname "$target")/LICENSE.txt" ]] || { echo "Font target and license must be job-owned files" >&2; exit 66; }
+}
+validate_target
 target="${hyperframes_directory}/${font_asset}"
 
 install_from() {
@@ -94,7 +112,7 @@ fi
 
 if [[ -z "$resolved" && ( "$font_family" == "Smiley Sans" || "$font_family" == "得意黑" ) ]]; then
   for extension in woff2 ttf otf; do
-    for cached in "$cache_directory"/smiley-sans-oblique."$extension" "$cache_directory"/SmileySans-Oblique."$extension"; do
+    for cached in "$cache_directory"/smiley-sans-oblique."$extension" "$cache_directory"/SmileySans-Oblique."$extension" "$repository_root"/assets/fonts/smiley-sans-oblique."$extension" "$repository_root"/assets/fonts/SmileySans-Oblique."$extension"; do
       [[ -s "$cached" ]] || continue
       resolved="$(install_from "$cached")" || continue
       break 2
@@ -113,6 +131,7 @@ if [[ -z "$resolved" ]]; then
 fi
 
 if [[ -z "$resolved" && -n "$allow_download" ]]; then
+  [[ -n "$approval" ]] || { echo "Font download requires --download --yes after approval" >&2; exit 77; }
   [[ "$font_family" == "Smiley Sans" || "$font_family" == "得意黑" ]] || { echo "Use --from for ${font_family}; the bundled download is Smiley Sans only." >&2; exit 64; }
   command -v curl >/dev/null 2>&1 || { echo "curl is required for --download" >&2; exit 69; }
   command -v unzip >/dev/null 2>&1 || { echo "unzip is required for --download" >&2; exit 69; }
@@ -126,6 +145,7 @@ if [[ -z "$resolved" && -n "$allow_download" ]]; then
     for extension in woff2 ttf otf; do
       candidate="$(find "$staging/unpacked" -type f -iname "*."$extension -print -quit)"
       [[ -n "$candidate" ]] || continue
+      install_from "$candidate" >/dev/null || continue
       mkdir -p "$cache_directory"
       downloaded_license="$(find "$staging/unpacked" -type f \( -iname 'LICENSE.txt' -o -iname 'OFL.txt' -o -iname 'LICENSE' \) -print -quit)"
       [[ -n "$downloaded_license" ]] || { echo "Downloaded font archive has no license" >&2; exit 1; }
@@ -148,7 +168,7 @@ if [[ -z "$resolved" ]]; then
     echo "  --from <font-file>                                     a file you already have"
     echo "  ${cache_directory}/smiley-sans-oblique.{woff2,ttf,otf}  the shared local cache"
     echo "  --download                                             fetch the upstream release (needs approval)"
-    echo "Missing font media is not fatal: the composition falls back to sans-serif."
+    echo "Required font media is missing; composition rendering is blocked."
   } >&2
   exit 1
 fi
@@ -161,15 +181,24 @@ case "$font_asset" in
   *."$source_extension") ;;
   *) font_asset="assets/fonts/$(basename "$resolved")" ;;
 esac
+validate_target
 target="${hyperframes_directory}/${font_asset}"
 license_source="$(dirname "$resolved")/LICENSE.txt"
-[[ -s "$license_source" ]] || { echo "Missing adjacent font LICENSE.txt; keep sans-serif or supply the font's license." >&2; exit 1; }
+# This host shared cache predates adjacent licensing. The shipped Smiley Sans
+# font license may accompany that known cached font; never use the repo license.
+if [[ ! -s "$license_source" && "$(dirname "$resolved")" == "$cache_directory"
+  && ( "$font_family" == "Smiley Sans" || "$font_family" == "得意黑" )
+  && ( "$(basename "$resolved")" == smiley-sans-oblique.* || "$(basename "$resolved")" == SmileySans-Oblique.* ) ]]; then
+  [[ ! -s "$cache_directory/../LICENSE.txt" ]] || license_source="$cache_directory/../LICENSE.txt"
+  [[ -s "$license_source" || ! -s "$repository_root/assets/fonts/LICENSE.txt" ]] || license_source="$repository_root/assets/fonts/LICENSE.txt"
+fi
+[[ -s "$license_source" ]] || { echo "Missing adjacent font LICENSE.txt; supply the selected font license before rendering." >&2; exit 1; }
 mkdir -p "$(dirname "$target")"
 [[ "$resolved" == "$target" ]] || cp "$resolved" "$target"
 
 # Keep the license next to the font so redistribution stays compliant.
 license_target="$(dirname "$target")/LICENSE.txt"
-if [[ ! -s "$license_target" ]]; then
+if [[ "$license_source" != "$license_target" ]]; then
   cp "$license_source" "$license_target"
 fi
 
@@ -197,6 +226,7 @@ case "$source_extension" in
 esac
 for page in "${hyperframes_directory}/index.template.html" "${hyperframes_directory}/index.html"; do
   [[ -s "$page" ]] || continue
+  [[ ! -L "$page" ]] || { echo "Font page must be a job-owned file: $page" >&2; exit 66; }
   node -e '
     const fs = require("fs");
     const [file, asset, format, family] = process.argv.slice(1);
@@ -216,9 +246,9 @@ for page in "${hyperframes_directory}/index.template.html" "${hyperframes_direct
   ' "$page" "$font_asset" "$font_format" "$font_family"
 done
 
-if [[ -f "${script_directory}/check-font.sh" ]]; then
+if [[ -f "${script_directory}/check-font.sh" && -s "${hyperframes_directory}/index.html" ]]; then
   bash "${script_directory}/check-font.sh" "$hyperframes_directory" "$design_system" >/dev/null 2>&1 \
-    || echo "note: check-font.sh did not pass yet; the composition must reference ${font_asset}" >&2
+    || { echo "Required font validation failed; composition must reference ${font_asset}" >&2; exit 1; }
 fi
 
 [[ -n "$quiet" ]] || {

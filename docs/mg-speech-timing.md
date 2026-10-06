@@ -4,7 +4,7 @@ Multi-element MGs reveal independent content in spoken order. Bind each spoken e
 
 The approved main-timeline preview provides phrase timing. Its generated `words[0]` / `:word-001` is a whole-entry timing unit, not word-level alignment. Authored phrase caption cues also do not prove a keyword onset.
 
-Apply this during the first composition, after ordinary plan delivery; do not wait for final-video feedback. It is preparation within the existing phase, with no extra approval or workflow state. A single isolated note can use its passage anchor directly.
+Resolve and persist this during `motion-plan`, before the visual package is presented or approved; do not change approved object timings during composition. It is preparation within the existing phase, with no extra approval or workflow state. A single isolated note can use its passage anchor directly.
 
 ## Existing ChatCut timing first
 
@@ -24,7 +24,7 @@ In `templateData.revealCues`, provide one cue per fragment `data-at` slot, in DO
 - `{atStart:true}` for neutral organizational headings or decorative content, never a spoken tool/result label.
 - `{after:0,delayFrames:6}` for a nonspeech embellishment following the earlier slot at index 0. The plan generator also accepts `frames:6` and normalizes it to `delayFrames`.
 
-Assembly derives template `revealTimes`; composition binds the same resolved timings into custom fragments. Keep custom animation code reading `data-at`. Resolve a missing or ambiguous keyword by fetching/refining only that affected anchor rather than guessing or looking up every subtitle. Preserve genuine repetitions and source replays. The existing validation reports changed approved snapshots, slot-count differences and reveals outside the beat window; this adds no workflow checkpoint. Existing jobs without bindings retain their authored timings; those timings alone do not satisfy speech alignment.
+Planning derives template reveal times and records separate `transcript.timingAnchors` plus controlled `objectCues`. Measured anchors never enter `segments.words` or duplicate subtitle wording. Controlled production modules use one `motion.reveal` per cue; the template gallery may retain raw `data-at` choreography. Assembly must reproduce the approved timings without rewriting the Beat Map. Resolve a missing or ambiguous keyword by fetching/refining only that affected anchor rather than guessing or looking up every subtitle. Preserve genuine repetitions and source replays. The existing validation reports changed approved snapshots, slot-count differences and reveals outside the beat window; this adds no workflow checkpoint. Existing jobs without bindings retain their authored timings; those timings alone do not satisfy speech alignment.
 
 ## Additional alignment only if necessary
 

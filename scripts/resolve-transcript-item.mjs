@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   beginWorkflowRevision,
+  enableVisualArrangementReviewForMotionPlan,
   ensureWorkflowDefaults,
   jobRootForWorkflow,
   readJson,
@@ -89,6 +90,7 @@ workflow.pendingGate = null;
 workflow.reconciliationReturnState = null;
 workflow.creativeConfirmationSha256 = null;
 workflow.creativeDocumentFingerprints = null;
+enableVisualArrangementReviewForMotionPlan(workflow);
 workflow.history.push({ at: now, action: "resolve-transcript-item", actor, from: previousState, to: "motion-plan", artifact: "state/transcript-reconciliation.json", note: options.note, itemId, resolution, revisionId: workflow.revisionId });
 workflow.completed = false;
 workflow.updatedAt = now;

@@ -116,6 +116,30 @@ try {
   assertPromoted(external);
   assert.equal(fs.existsSync(exportPath), false);
 
+  // ChatCut approves a state record, while the exported bytes are locked separately.
+  const locked = fixture("locked-chatcut-export", "old");
+  const lockedWorkflow = {
+    currentState: "composition", authoritativeMediaPath: "roughcut/a-roll.mp4",
+    authoritativeMediaSha256: currentHash,
+    gates: { "rough-cut-review": { status: "approved", artifact: "state/chatcut-roughcut.json" } }
+  };
+  const lockedWorkflowPath = path.join(locked.root, "state/workflow.json");
+  fs.writeFileSync(lockedWorkflowPath, JSON.stringify(lockedWorkflow));
+  const lockedReplacement = promote(locked, { source: media.blue });
+  assert.notEqual(lockedReplacement.status, 0);
+  assert.match(lockedReplacement.stderr, /locked roughcut/);
+  assert.equal(sha256File(locked.canonical), currentHash);
+  assert.equal(sha256File(locked.asset), oldHash);
+  assert.equal(fs.readFileSync(locked.projectPath, "utf8"), locked.originalProject);
+  succeeded(promote(locked));
+  assertPromoted(locked);
+  fs.writeFileSync(lockedWorkflowPath, JSON.stringify({ ...lockedWorkflow,
+    currentState: "rough-cut", authoritativeMediaPath: "input/source.mp4", authoritativeMediaSha256: null,
+    gates: { "rough-cut-review": { status: "not-reached" } }
+  }));
+  succeeded(promote(locked, { source: media.blue }));
+  assert.equal(sha256File(locked.canonical), oldHash);
+
   const finalJob = fixture("direct-final-revision", "old");
   fs.mkdirSync(path.join(finalJob.root, "output"));
   const finalPath = path.join(finalJob.root, "output/final.mp4");
@@ -123,12 +147,14 @@ try {
   fs.writeFileSync(path.join(finalJob.root, "state/workflow.json"), JSON.stringify({
     lastKnownGoodDelivery: { path: "output/final.mp4", sha256: oldHash }
   }));
-  succeeded(run(process.execPath, [promotionScript, finalJob.root, "final", media.red]));
-  assert.equal(sha256File(finalPath), currentHash);
+  const finalReplacement = run(process.execPath, [promotionScript, finalJob.root, "final", media.red]);
+  assert.notEqual(finalReplacement.status, 0);
+  assert.match(finalReplacement.stderr, /Preserve the last delivery/);
+  assert.equal(sha256File(finalPath), oldHash);
   assert.deepEqual(fs.readdirSync(path.dirname(finalPath)), ["final.mp4"]);
-  assert.equal(readJson(finalJob.projectPath).mediaArtifacts.final.path, "output/final.mp4");
+  assert.equal(readJson(finalJob.projectPath).mediaArtifacts.final, undefined);
   assert.equal(sha256File(finalJob.asset), oldHash, "final replacement does not touch A-roll assets");
-  console.log("Media promotion tests passed: missing, stale, same-inode, repeat, consume, rollback, external export and direct final revision.");
+  console.log("Media promotion tests passed: mirrors, rollback, export, locked roughcut and last-good final protection.");
 } finally {
   fs.rmSync(temporaryRoot, { recursive: true, force: true });
 }

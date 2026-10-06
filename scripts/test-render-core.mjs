@@ -1,0 +1,651 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { deriveMotionIndex } from "./motion-index.mjs";
+import * as frameWindowUtils from "./frame-window-utils.mjs";
+import { deriveRenderInputs, deriveRenderManifest, resolveRenderMode, unsafeRenderIntervals } from "./render-manifest.mjs";
+import {
+  assertPinnedArtifacts,
+  pinRenderedArtifacts,
+  probeVideoArtifact,
+  promoteRenderedCandidate,
+  renderOutput,
+  renderChunkedOutput,
+  validateCacheReceipt,
+  verifyAssemblyReceipt,
+  resolvePostMixAudioTags,
+  singlePassAudioSupported
+} from "./render-chunks.mjs";
+import { computeCreativeAuthorities, computeDesignLanguageFingerprint, readJson, sha256File, writeJsonAtomic } from "./workflow-utils.mjs";
+
+const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cut-motion-render-core-"));
+const jobRoot = path.join(temporaryRoot, "job");
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const write = (relativePath, content) => {
+  const target = path.join(jobRoot, relativePath);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, content);
+  return target;
+};
+const writeJson = (relativePath, value) => write(relativePath, `${JSON.stringify(value, null, 2)}\n`);
+
+try {
+  const mediaPath = write("hyperframes/assets/a-roll.mp4", "authoritative-media");
+  const captionSection = '<section class="clip motion-caption-layer" data-caption-id="cue-1" data-caption-start-frame="60" data-caption-end-frame="90" data-start="2" data-duration="1"><p>测试</p></section>';
+  const template = (section = captionSection) => `<!doctype html>
+<link rel="stylesheet" href="./extra.css">
+<style>.poster{background-image:image-set("./assets/background.png" 1x)}</style>
+<audio id="source-audio" src="./assets/a-roll.mp4"></audio>
+<video poster="./assets/poster.png" srcset="./assets/one.png 1x, ./assets/two.png 2x"></video>
+<!-- CUT_MOTION_CAPTIONS_START -->${section}<!-- CUT_MOTION_CAPTIONS_END -->`;
+  write("hyperframes/assets/poster.png", "poster");
+  write("hyperframes/assets/one.png", "one");
+  write("hyperframes/assets/two.png", "two");
+  write("hyperframes/assets/background.png", "background");
+  write("hyperframes/assets/nested.png", "nested");
+  write("hyperframes/extra.css", '@import "./nested.css";\n');
+  write("hyperframes/nested.css", '.nested{background-image:url("./assets/nested.png")}\n');
+  write("hyperframes/index.template.html", template());
+  writeJson("hyperframes/package.json", {
+    private: true,
+    devDependencies: { gsap: "3.13.0", hyperframes: "0.7.60" }
+  });
+  writeJson("hyperframes/node_modules/hyperframes/package.json", {
+    version: "0.7.60",
+    bin: { hyperframes: "dist/cli.js" }
+  });
+  const cliPath = write("hyperframes/node_modules/hyperframes/dist/cli.js", "#!/usr/bin/env node\n");
+  fs.chmodSync(cliPath, 0o755);
+  const binDirectory = path.join(jobRoot, "hyperframes/node_modules/.bin");
+  fs.mkdirSync(binDirectory, { recursive: true });
+  fs.symlinkSync(path.relative(binDirectory, cliPath), path.join(binDirectory, "hyperframes"));
+  writeJson("state/transcript.json", { segments: [] });
+  writeJson("state/beat-map.json", {
+    fps: 30,
+    duration: 30,
+    beats: [
+      { id: "beat-a", start: 0, end: 3, axis: "A", reuseGroup: "shared" },
+      { id: "beat-b", start: 3, end: 6, axis: "A", reuseGroup: "shared" }
+    ]
+  });
+  writeJson("captions/captions.json", {
+    cues: [{ id: "cue-1", start: 2, end: 3, startFrame: 60, endFrame: 90, text: "测试", lines: ["测试"] }]
+  });
+  writeJson("state/workflow.json", {
+    authoritativeMediaPath: "hyperframes/assets/a-roll.mp4",
+    authoritativeMediaSha256: sha256File(mediaPath),
+    captionMode: "subtitles"
+  });
+  writeJson("state/design-system.json", { canvas: { width: 1080, height: 1920 } });
+  writeJson("state/creative-confirmation.json", { visualAxisMode: "a-axis-overlay" });
+
+  const v2AuthorityJobRoot = path.join(temporaryRoot, "v2-authority-job");
+  const writeV2AuthorityJson = (relativePath, value) => {
+    const filePath = path.join(v2AuthorityJobRoot, relativePath);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
+  };
+  const v2MaterialPath = path.join(v2AuthorityJobRoot, "input", "evidence", "registered.png");
+  fs.mkdirSync(path.dirname(v2MaterialPath), { recursive: true });
+  fs.writeFileSync(v2MaterialPath, "fact-bounded registered material");
+  const v2VisualDecision = {
+    mode: "argument",
+    informationDelta: {
+      kind: "state-change",
+      statement: "The argument moves through three supported states.",
+      basis: "spoken-structure",
+      supportingWordIds: ["segment-001:word-001"]
+    },
+    objectFamily: "state-cards",
+    visualVerb: "evolve",
+    evolutionMode: "evolve",
+    argumentStates: [
+      { id: "before", anchorWordId: "segment-001:word-001", operation: "introduce", activeObjectCueIds: ["primary-copy"], stateChange: "Introduce the starting state.", readability: "clear" },
+      { id: "during", anchorWordId: "segment-001:word-002", operation: "transform", activeObjectCueIds: ["primary-copy"], stateChange: "Transform the starting state.", readability: "clear" },
+      { id: "after", anchorWordId: "segment-001:word-003", operation: "resolve", activeObjectCueIds: ["primary-copy"], stateChange: "Resolve the transformed state.", readability: "impact" }
+    ],
+    fallback: "Use the complete spoken structure as subtitles."
+  };
+  const v2BeatMap = {
+    duration: 3,
+    fps: 30,
+    captionMode: "subtitles",
+    designSystem: "state/design-system.json",
+    visualOrchestrationVersion: 2,
+    materials: [{
+      id: "registered-evidence",
+      path: "input/evidence/registered.png",
+      kind: "screenshot",
+      sha256: sha256File(v2MaterialPath),
+      sourceOrRights: "test fixture",
+      privacyStatus: "approved",
+      visibleFacts: ["The material is limited to this registered fixture."],
+      forbiddenInferences: ["Do not infer beyond the registered fixture."]
+    }],
+    beats: [{
+      id: "beat-v2",
+      sceneId: "scene-001",
+      sourceSegmentIds: ["segment-001"],
+      text: "A fact-bounded visual argument.",
+      start: 0,
+      end: 3,
+      audioAnchorTime: 0,
+      axis: "A",
+      recipe: "argument",
+      intent: "Explain the state transition.",
+      motionFamily: "editorial",
+      transitionFamily: "cut",
+      mgScope: "local",
+      visualDecision: v2VisualDecision
+    }]
+  };
+  writeV2AuthorityJson("state/transcript.json", {
+    segments: [{ id: "segment-001", words: [{ text: "一", start: 0, end: 0.5 }, { text: "二", start: 1, end: 1.5 }, { text: "三", start: 2, end: 2.5 }] }]
+  });
+  writeV2AuthorityJson("state/beat-map.json", v2BeatMap);
+  writeV2AuthorityJson("state/design-system.json", { canvas: { width: 1080, height: 1920 } });
+  writeV2AuthorityJson("state/creative-confirmation.json", { visualAxisMode: "a-axis-overlay" });
+  writeV2AuthorityJson("captions/caption-review-plan.json", { cues: [] });
+  const v2Authorities = computeCreativeAuthorities(v2AuthorityJobRoot, "subtitles");
+  assert.deepEqual(v2Authorities["material:registered-evidence"], {
+    path: "input/evidence/registered.png",
+    sha256: sha256File(v2MaterialPath)
+  });
+  const v2DesignFingerprint = computeDesignLanguageFingerprint(v2AuthorityJobRoot, "subtitles");
+  const v2ObjectFamilyMutation = structuredClone(v2BeatMap);
+  v2ObjectFamilyMutation.beats[0].visualDecision.objectFamily = "causal-chain";
+  writeV2AuthorityJson("state/beat-map.json", v2ObjectFamilyMutation);
+  assert.notEqual(
+    computeDesignLanguageFingerprint(v2AuthorityJobRoot, "subtitles"),
+    v2DesignFingerprint,
+    "visualDecision.objectFamily must invalidate the design-language fingerprint"
+  );
+  const v2StateChangeMutation = structuredClone(v2BeatMap);
+  v2StateChangeMutation.beats[0].visualDecision.argumentStates[1].stateChange = "Filter the starting state before resolution.";
+  writeV2AuthorityJson("state/beat-map.json", v2StateChangeMutation);
+  assert.notEqual(
+    computeDesignLanguageFingerprint(v2AuthorityJobRoot, "subtitles"),
+    v2DesignFingerprint,
+    "visualDecision argument-state changes must invalidate the design-language fingerprint"
+  );
+
+  writeJson("state/beat-map.json", { fps: 60, duration: 195.116667, beats: [] });
+  writeJson("captions/captions.json", { cues: [] });
+  write("hyperframes/index.template.html", template(""));
+  assert.equal(deriveRenderInputs(jobRoot).totalFrames, 11707);
+  const { durationToFrames } = frameWindowUtils;
+  assert.equal(durationToFrames(195.116667, 60), 11707);
+  assert.equal(durationToFrames(2.01, 30), 61);
+  assert.equal(durationToFrames((11707.0005) / 60, 60), 11708);
+  write("hyperframes/index.template.html", template());
+  writeJson("state/beat-map.json", {
+    fps: 30,
+    duration: 30,
+    beats: [
+      { id: "beat-a", start: 0, end: 3, axis: "A", reuseGroup: "shared" },
+      { id: "beat-b", start: 3, end: 6, axis: "A", reuseGroup: "shared" }
+    ]
+  });
+  writeJson("captions/captions.json", {
+    cues: [{ id: "cue-1", start: 2, end: 3, startFrame: 60, endFrame: 90, text: "测试", lines: ["测试"] }]
+  });
+
+  const manifest = deriveRenderManifest(jobRoot, { designLanguageFingerprint: "design-v1" });
+  assert.equal(manifest.schemaVersion, "2.0.0");
+  assert.equal(manifest.renderer.environment.platform, process.platform);
+  assert.match(manifest.renderer.fingerprint, /^[a-f0-9]{64}$/);
+  const originalGpuMode = process.env.PRODUCER_BROWSER_GPU_MODE;
+  try {
+    process.env.PRODUCER_BROWSER_GPU_MODE = "software-regression";
+    const envChanged = deriveRenderManifest(jobRoot, { baselineManifest: manifest, designLanguageFingerprint: "design-v1" });
+    assert.notEqual(envChanged.renderer.fingerprint, manifest.renderer.fingerprint);
+    assert.ok(envChanged.chunks.every((chunk, index) => chunk.cacheKey !== manifest.chunks[index].cacheKey));
+    assert.equal(envChanged.renderer.environment.rendererEnvironment.PRODUCER_BROWSER_GPU_MODE, "software-regression");
+  } finally {
+    if (originalGpuMode === undefined) delete process.env.PRODUCER_BROWSER_GPU_MODE;
+    else process.env.PRODUCER_BROWSER_GPU_MODE = originalGpuMode;
+  }
+  assert.ok(manifest.beats.every((beat) => beat.window && beat.fingerprint));
+  assert.ok(manifest.captions.every((cue) => cue.window && cue.fingerprint));
+  assert.ok(manifest.chunks.every((chunk) => /^[a-f0-9]{64}$/.test(chunk.cacheKey)));
+  assert.ok(manifest.chunks.every((chunk) => !("standardKey" in chunk) && !("highKey" in chunk)));
+  const isolatedRenderRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cut-motion-render-manifest-"));
+  try {
+    for (const relativePath of [
+      "scripts/render-manifest.mjs",
+      "scripts/frame-window-utils.mjs",
+      "scripts/motion-window-utils.mjs",
+      "scripts/workflow-utils.mjs",
+      "scripts/visual-orchestration-version.mjs",
+      "scripts/build-composition.mjs",
+      "schemas/beat-map.schema.json"
+    ]) {
+      const source = path.join(repositoryRoot, relativePath);
+      const target = path.join(isolatedRenderRoot, relativePath);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(source, target);
+    }
+    const isolatedJobRoot = path.join(isolatedRenderRoot, "job");
+    const writeIsolated = (relativePath, content) => {
+      const target = path.join(isolatedJobRoot, relativePath);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, content);
+      return target;
+    };
+    const writeIsolatedJson = (relativePath, value) => writeIsolated(relativePath, `${JSON.stringify(value, null, 2)}\n`);
+    const isolatedMediaPath = writeIsolated("hyperframes/assets/a-roll.mp4", "authoritative-media");
+    writeIsolated("hyperframes/index.template.html", "<!-- CUT_MOTION_CAPTIONS_START --><!-- CUT_MOTION_CAPTIONS_END -->");
+    writeIsolatedJson("hyperframes/package.json", { private: true, devDependencies: { gsap: "3.13.0", hyperframes: "0.7.60" } });
+    writeIsolatedJson("hyperframes/node_modules/hyperframes/package.json", { version: "0.7.60", bin: { hyperframes: "dist/cli.js" } });
+    const isolatedCliPath = writeIsolated("hyperframes/node_modules/hyperframes/dist/cli.js", "#!/usr/bin/env node\n");
+    fs.chmodSync(isolatedCliPath, 0o755);
+    const isolatedBinDirectory = path.join(isolatedJobRoot, "hyperframes/node_modules/.bin");
+    fs.mkdirSync(isolatedBinDirectory, { recursive: true });
+    fs.symlinkSync(path.relative(isolatedBinDirectory, isolatedCliPath), path.join(isolatedBinDirectory, "hyperframes"));
+    writeIsolatedJson("state/transcript.json", { segments: [] });
+    writeIsolatedJson("state/beat-map.json", { fps: 30, duration: 30, beats: [] });
+    writeIsolatedJson("captions/captions.json", { cues: [] });
+    writeIsolatedJson("state/workflow.json", {
+      authoritativeMediaPath: "hyperframes/assets/a-roll.mp4",
+      authoritativeMediaSha256: sha256File(isolatedMediaPath),
+      captionMode: "subtitles"
+    });
+    writeIsolatedJson("state/design-system.json", { canvas: { width: 1080, height: 1920 } });
+    const isolatedRenderManifest = await import(pathToFileURL(path.join(isolatedRenderRoot, "scripts/render-manifest.mjs")).href);
+    const isolatedManifest = isolatedRenderManifest.deriveRenderManifest(isolatedJobRoot, { designLanguageFingerprint: "design-v1" });
+    fs.appendFileSync(path.join(isolatedRenderRoot, "scripts/visual-orchestration-version.mjs"), "\n// render dependency regression\n");
+    const helperRevision = isolatedRenderManifest.deriveRenderManifest(isolatedJobRoot, { designLanguageFingerprint: "design-v1" });
+    assert.notEqual(helperRevision.sharedDependencySha256, isolatedManifest.sharedDependencySha256);
+    assert.notEqual(helperRevision.chunks[0].cacheKey, isolatedManifest.chunks[0].cacheKey);
+  } finally {
+    fs.rmSync(isolatedRenderRoot, { recursive: true, force: true });
+  }
+  writeJson("captions/captions.json", {
+    cues: [{ id: "cue-1", start: 2, end: 3, text: "测试", lines: ["测试"] }]
+  });
+  assert.throws(() => deriveRenderManifest(jobRoot), /half-open integer frame window/);
+  writeJson("captions/captions.json", {
+    cues: [{ id: "cue-1", start: 2, end: 3, startFrame: 60, endFrame: 90, text: "测试", lines: ["测试"] }]
+  });
+  write("hyperframes/index.template.html", template(`${captionSection}<div>untracked caption content</div>`));
+  assert.throws(() => deriveRenderManifest(jobRoot), /content outside caption sections/);
+  write("hyperframes/index.template.html", template());
+  write("hyperframes/index.template.html", template(captionSection.replace("测试", "篡改")));
+  const installedCaptionRevision = deriveRenderManifest(jobRoot, {
+    baselineManifest: manifest,
+    designLanguageFingerprint: "design-v1"
+  });
+  assert.deepEqual(
+    installedCaptionRevision.chunks.map((chunk, index) => chunk.cacheKey !== manifest.chunks[index].cacheKey),
+    manifest.chunks.map((chunk) => chunk.captionCueIds.includes("cue-1"))
+  );
+  write("hyperframes/index.template.html", template(""));
+  assert.throws(() => deriveRenderManifest(jobRoot), /caption section count/);
+  write("hyperframes/index.template.html", template(`${captionSection}${captionSection}`));
+  assert.throws(() => deriveRenderManifest(jobRoot), /Duplicate installed caption section/);
+  write("hyperframes/index.template.html", template());
+  write("hyperframes/index.template.html", template(captionSection.replace('data-caption-start-frame="60"', 'data-caption-start-frame="59"')));
+  assert.throws(() => deriveRenderManifest(jobRoot), /timing differs from captions\.json/);
+  write("hyperframes/index.template.html", template(captionSection.replace('data-start="2"', 'data-start="2.1"')));
+  assert.throws(() => deriveRenderManifest(jobRoot), /timing differs from captions\.json/);
+  write("hyperframes/index.template.html", template());
+  for (const [filename, original] of [
+    ["poster.png", "poster"],
+    ["one.png", "one"],
+    ["two.png", "two"],
+    ["background.png", "background"],
+    ["nested.png", "nested"]
+  ]) {
+    fs.writeFileSync(path.join(jobRoot, "hyperframes/assets", filename), `${original}-replaced`);
+    assert.ok(deriveRenderManifest(jobRoot, {
+      baselineManifest: manifest,
+      designLanguageFingerprint: "design-v1"
+    }).chunks.every((chunk, index) => chunk.cacheKey !== manifest.chunks[index].cacheKey));
+    fs.writeFileSync(path.join(jobRoot, "hyperframes/assets", filename), original);
+  }
+  write("hyperframes/index.template.html", `${template()}<script>fetch("./assets/one.png")</script>`);
+  assert.throws(() => deriveRenderManifest(jobRoot), /Dynamic media references are unsupported/);
+  write("hyperframes/index.template.html", `${template()}<script>const clean = element.style.backgroundImage === "none";</script>`);
+  assert.doesNotThrow(() => deriveRenderManifest(jobRoot));
+  for (const operator of ["+=", "||=", "??="]) {
+    write("hyperframes/index.template.html", `${template()}<script>element.style.backgroundImage ${operator} "./assets/one.png";</script>`);
+    assert.throws(() => deriveRenderManifest(jobRoot), /Dynamic media references are unsupported/);
+  }
+  for (const source of [
+    `${template()}<script>image["src"] = "./assets/one.png";</script>`,
+    `${template()}<script>element.style.backgroundImage/**/= "./assets/one.png";</script>`
+  ]) {
+    write("hyperframes/index.template.html", source);
+    assert.throws(() => deriveRenderManifest(jobRoot), /Dynamic media references are unsupported/);
+  }
+  write("hyperframes/index.template.html", template().replace("./assets/poster.png", "https://example.invalid/poster.png"));
+  assert.throws(() => deriveRenderManifest(jobRoot), /Remote render resources must be localized/);
+  write("hyperframes/index.template.html", template());
+  const raceManifest = deriveRenderManifest(jobRoot);
+  const raceCandidate = write("previews/race.tmp.mp4", "candidate");
+  const raceOutput = path.join(jobRoot, "previews/race.mp4");
+  fs.writeFileSync(path.join(jobRoot, "hyperframes/assets/poster.png"), "changed-during-promotion");
+  assert.throws(
+    () => promoteRenderedCandidate(jobRoot, raceManifest, raceCandidate, raceOutput),
+    /Render inputs changed/
+  );
+  assert.ok(fs.existsSync(raceCandidate) && !fs.existsSync(raceOutput));
+  fs.unlinkSync(raceCandidate);
+  fs.writeFileSync(path.join(jobRoot, "hyperframes/assets/poster.png"), "poster");
+  writeJson("captions/captions.json", {
+    cues: [{ id: "cue-1", start: 2, end: 3, startFrame: 60, endFrame: 90, text: "已修改", lines: ["已修改"] }]
+  });
+  const captionRevision = deriveRenderManifest(jobRoot, {
+    baselineManifest: manifest,
+    designLanguageFingerprint: "design-v1"
+  });
+  assert.deepEqual(
+    captionRevision.chunks.map(({ startFrame, endFrame }) => [startFrame, endFrame]),
+    manifest.chunks.map(({ startFrame, endFrame }) => [startFrame, endFrame])
+  );
+  assert.deepEqual(
+    captionRevision.chunks.map((chunk, index) => chunk.cacheKey !== manifest.chunks[index].cacheKey),
+    manifest.chunks.map((chunk) => chunk.captionCueIds.includes("cue-1"))
+  );
+  writeJson("captions/captions.json", {
+    cues: [{ id: "cue-1", start: 2, end: 3, startFrame: 60, endFrame: 90, text: "测试", lines: ["测试"] }]
+  });
+  const anchoredBeatMap = readJson(path.join(jobRoot, "state", "beat-map.json"));
+  Object.assign(anchoredBeatMap.beats[0], {
+    mgScope: "local",
+    entryAnchorWordId: "segment-001:word-001",
+    exitAnchorWordId: "segment-001:word-002",
+    exitAnchorOffsetFrames: 0,
+    exitFrames: 3
+  });
+  writeJson("state/beat-map.json", anchoredBeatMap);
+  writeJson("state/transcript.json", {
+    segments: [{
+      id: "segment-001",
+      words: [
+        { text: "一", start: 0.1, end: 0.2 },
+        { text: "二", start: 2.4, end: 2.5 }
+      ]
+    }]
+  });
+  write("hyperframes/assets/module.png", "module-asset");
+  write("hyperframes/mg/beat-a/fragment.html", '<div data-beat-id="beat-a"><img src="./assets/module.png"></div>');
+  write("hyperframes/mg/beat-a/style.css", '.image { background: url("./assets/module.png"); }');
+  write("hyperframes/mg/beat-a/timeline.mjs", "timeline.set(root, { autoAlpha: 1 }, beat.entryAnchorTime);");
+  const anchoredManifest = deriveRenderManifest(jobRoot, { designLanguageFingerprint: "design-v1" });
+  const shiftedTranscript = readJson(path.join(jobRoot, "state", "transcript.json"));
+  shiftedTranscript.segments[0].words[0].start = 0.105;
+  writeJson("state/transcript.json", shiftedTranscript);
+  const shiftedAnchorManifest = deriveRenderManifest(jobRoot, {
+    baselineManifest: anchoredManifest,
+    designLanguageFingerprint: "design-v1"
+  });
+  assert.deepEqual(
+    shiftedAnchorManifest.chunks.map(({ startFrame, endFrame }) => [startFrame, endFrame]),
+    anchoredManifest.chunks.map(({ startFrame, endFrame }) => [startFrame, endFrame])
+  );
+  assert.notEqual(
+    shiftedAnchorManifest.beats.find((beat) => beat.beatId === "beat-a").fingerprint,
+    anchoredManifest.beats.find((beat) => beat.beatId === "beat-a").fingerprint,
+    "same-frame word-anchor changes must invalidate the rendered Beat"
+  );
+  assert.deepEqual(
+    unsafeRenderIntervals(
+      { fps: 30, duration: 30, beats: [
+        { id: "a", start: 0, end: 2, axis: "A", reuseGroup: "same" },
+        { id: "b", start: 2, end: 4, axis: "A", reuseGroup: "same" }
+      ] },
+      { fps: 30, totalFrames: 900, beats: [], captions: [] }
+    ),
+    [],
+    "reuseGroup must not create a continuous no-cut interval"
+  );
+  const thoughtfulRenderBeatMap = readJson(path.join(jobRoot, "state", "beat-map.json"));
+  Object.assign(thoughtfulRenderBeatMap.beats[0], {
+    motionProfile: "thoughtful-editorial-v1",
+    surfaceTreatment: "direct-overlay",
+    objectCues: [{
+      id: "primary-copy",
+      semanticRole: "primary-copy",
+      spokenTriggerWordId: "segment-001:word-001",
+      preMotionFrame: 6,
+      firstLegibleFrame: 6,
+      settledFrame: 12,
+      exitTriggerWordId: "segment-001:word-002",
+      invisibleFrame: 84,
+      holdKind: "standard"
+    }]
+  });
+  writeJson("state/beat-map.json", thoughtfulRenderBeatMap);
+  const thoughtfulInputs = deriveRenderInputs(jobRoot);
+  const thoughtfulEntry = thoughtfulInputs.beats.find((beat) => beat.beatId === "beat-a");
+  assert.deepEqual(thoughtfulEntry.window, { startFrame: 6, endFrame: 84 });
+  const initialThoughtfulFingerprint = thoughtfulEntry.fingerprint;
+  thoughtfulRenderBeatMap.beats[0].objectCues[0].invisibleFrame = 90;
+  writeJson("state/beat-map.json", thoughtfulRenderBeatMap);
+  const changedThoughtfulEntry = deriveRenderInputs(jobRoot).beats.find((beat) => beat.beatId === "beat-a");
+  assert.deepEqual(changedThoughtfulEntry.window, { startFrame: 6, endFrame: 90 });
+  assert.notEqual(changedThoughtfulEntry.fingerprint, initialThoughtfulFingerprint);
+  const thoughtfulDesignBefore = computeDesignLanguageFingerprint(jobRoot, "subtitles");
+  const thoughtfulDesign = readJson(path.join(jobRoot, "state", "design-system.json"));
+  thoughtfulDesign.motionProfiles = {
+    "thoughtful-editorial-v1": {
+      defaultSurface: "direct-overlay",
+      cueTiming: { referenceFps: 60, maxPreMotionFrames: 3 }
+    }
+  };
+  writeJson("state/design-system.json", thoughtfulDesign);
+  const thoughtfulDesignAfter = computeDesignLanguageFingerprint(jobRoot, "subtitles");
+  assert.notEqual(thoughtfulDesignAfter, thoughtfulDesignBefore, "motion profile policy must invalidate the design-language fingerprint");
+  const locator = deriveMotionIndex(jobRoot);
+  assert.equal(locator.schemaVersion, "2.0.0");
+  assert.ok(!("sourceHashes" in locator) && !("sharedDependencySha256" in locator));
+
+  fs.appendFileSync(cliPath, "// runtime changed\n");
+  const changedRuntime = deriveRenderManifest(jobRoot, {
+    baselineManifest: manifest,
+    designLanguageFingerprint: "design-v1"
+  });
+  assert.notEqual(changedRuntime.chunks[0].cacheKey, manifest.chunks[0].cacheKey);
+
+  const chunk = manifest.chunks[0];
+  const cacheDirectory = path.join(jobRoot, "hyperframes/cache/standard");
+  fs.mkdirSync(cacheDirectory, { recursive: true });
+  const cacheArtifact = write(`hyperframes/cache/standard/${chunk.cacheKey}.mp4`, "cache-artifact");
+  writeJson(`hyperframes/cache/standard/${chunk.cacheKey}.receipt.json`, {
+    schemaVersion: "2.0.0",
+    cacheKey: chunk.cacheKey,
+    quality: "standard",
+    chunkDependencySha256: chunk.dependencySha256,
+    artifactSha256: sha256File(cacheArtifact),
+    frameCount: chunk.endFrame - chunk.startFrame,
+    streamSignature: { codec: "h264", width: 1080, height: 1920 }
+  });
+  const cachedChunk = validateCacheReceipt(jobRoot, "standard", chunk);
+  assert.ok(cachedChunk);
+  assert.equal(validateCacheReceipt(jobRoot, "high", chunk), null);
+  const pinnedDirectory = path.join(jobRoot, "hyperframes", "chunks", "pin-test");
+  fs.mkdirSync(pinnedDirectory, { recursive: true });
+  const pinned = pinRenderedArtifacts(pinnedDirectory, [cachedChunk]);
+  fs.renameSync(cacheArtifact, `${cacheArtifact}.original`);
+  fs.writeFileSync(cacheArtifact, "replacement-at-original-path");
+  assert.doesNotThrow(() => assertPinnedArtifacts(pinned), "atomic path replacement must not alter the pinned inode");
+  fs.appendFileSync(pinned[0].pinnedPath, "in-place-tamper");
+  assert.throws(() => assertPinnedArtifacts(pinned), /changed during assembly/);
+
+  assert.throws(
+    () => renderChunkedOutput(jobRoot, "standard", path.join(jobRoot, "state", "preview.mp4")),
+    /standard render output must be a direct MP4 child of previews/
+  );
+  assert.throws(
+    () => renderChunkedOutput(jobRoot, "high", path.join(jobRoot, "previews", "delivery.mp4")),
+    /high render output must be a direct MP4 child of output/
+  );
+
+  const outputPath = path.join(jobRoot, "previews/standard-output.mp4");
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  const receiptRender = spawnSync("ffmpeg", [
+    "-v", "error",
+    "-f", "lavfi", "-i", "color=black:s=160x284:r=30:d=1",
+    "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+    "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+    outputPath
+  ], { encoding: "utf8" });
+  assert.equal(receiptRender.status, 0, receiptRender.stderr);
+  const receiptProbe = probeVideoArtifact(outputPath);
+  writeJson("state/render-manifest.json", {
+    contentManifestSha256: manifest.contentManifestSha256,
+    totalFrames: receiptProbe.actualFrames,
+    fps: 30,
+    width: receiptProbe.width,
+    height: receiptProbe.height,
+    duration: receiptProbe.duration
+  });
+  writeJsonAtomic(`${outputPath}.render.json`, {
+    schemaVersion: "2.0.0",
+    quality: "standard",
+    mode: "chunked",
+    artifactSha256: sha256File(outputPath),
+    contentManifestSha256: manifest.contentManifestSha256,
+    totalFrames: receiptProbe.actualFrames,
+    streamSignature: receiptProbe.streamSignature
+  });
+  assert.equal(verifyAssemblyReceipt(jobRoot, "previews/standard-output.mp4", {
+    quality: "standard",
+    contentManifestSha256: manifest.contentManifestSha256
+  }).mode, "chunked");
+  assert.throws(
+    () => verifyAssemblyReceipt(jobRoot, "previews/standard-output.mp4", { quality: "high" }),
+    /Expected high/
+  );
+  const staleReceipt = readJson(`${outputPath}.render.json`);
+  staleReceipt.streamSignature.pixelFormat = "yuv444p";
+  writeJsonAtomic(`${outputPath}.render.json`, staleReceipt);
+  assert.throws(
+    () => verifyAssemblyReceipt(jobRoot, "previews/standard-output.mp4"),
+    /stream signature is stale/
+  );
+
+  assert.equal(resolveRenderMode("auto", 30), "monolithic");
+  assert.equal(resolveRenderMode("chunked", 30), "chunked");
+  writeJson("state/beat-map.json", { fps: 30, duration: 30, beats: [] });
+  writeJson("captions/captions.json", { cues: [] });
+  fs.rmSync(path.join(jobRoot, "hyperframes/mg"), { recursive: true, force: true });
+  write("hyperframes/index.template.html", `${template("")}
+<style>/* CUT_MOTION_MG_STYLES */</style>
+<main><!-- CUT_MOTION_MG_FRAGMENTS --></main>
+<script>/* CUT_MOTION_MG_TIMELINES */
+/* CUT_MOTION_CONTENT_COLLISION */</script>`);
+  writeJson("state/design-system.json", { canvas: { width: 160, height: 284 } });
+  const renderLogPath = path.join(jobRoot, "render-invocations.log");
+  writeJson("state/workflow.json", {
+    authoritativeMediaPath: "hyperframes/assets/a-roll.mp4",
+    authoritativeMediaSha256: sha256File(mediaPath),
+    captionMode: "subtitles",
+    mode: "review",
+    roughCutReviewDecision: "manual-approved"
+  });
+  fs.writeFileSync(cliPath, `#!/usr/bin/env node
+const fs = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const output = process.argv[process.argv.indexOf("--output") + 1];
+fs.appendFileSync(${JSON.stringify(renderLogPath)}, "render\\n");
+const result = spawnSync("ffmpeg", [
+  "-v", "error", "-f", "lavfi", "-i", "color=black:s=160x284:r=30:d=30",
+  "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo:d=" + (process.env.CUT_MOTION_TEST_BAD_AUDIO ? "30.1" : "30"),
+  "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", output
+], { stdio: "inherit" });
+process.exit(result.status ?? 1);
+`);
+  fs.chmodSync(cliPath, 0o755);
+  const defaultOutput = path.join(jobRoot, "previews", "default.mp4");
+  const defaultRender = renderOutput(jobRoot, "standard", defaultOutput);
+  assert.equal(defaultRender.mode, "monolithic");
+  assert.deepEqual(defaultRender.manifest.chunks.map(({ startFrame, endFrame }) => [startFrame, endFrame]), [[0, 900]]);
+  assert.equal(fs.readFileSync(renderLogPath, "utf8").trim().split("\n").length, 1);
+  assert.equal(defaultRender.receipt.mode, "monolithic");
+  assert.equal(verifyAssemblyReceipt(jobRoot, "previews/default.mp4", { quality: "standard" }).mode, "monolithic");
+  assert.equal(renderOutput(jobRoot, "standard", defaultOutput).reused, true);
+  assert.equal(fs.readFileSync(renderLogPath, "utf8").trim().split("\n").length, 1, "identical verified output does not rerender");
+  assert.deepEqual(defaultRender.receipt.rendererEnvironment, defaultRender.manifest.renderer.environment);
+
+  const reviewHighOutput = path.join(jobRoot, "output/review-high.mp4");
+  const reviewHighRender = renderOutput(jobRoot, "high", reviewHighOutput);
+  assert.equal(reviewHighRender.receipt.mode, "monolithic");
+  assert.equal(verifyAssemblyReceipt(jobRoot, "output/review-high.mp4", { quality: "high" }).mode, "monolithic");
+  const finalPath = write("output/final.mp4", "last-known-good");
+  const beforeRejectedRender = fs.readFileSync(renderLogPath, "utf8");
+  assert.throws(() => renderOutput(jobRoot, "high", finalPath), /existing final.mp4 must be preserved/);
+  assert.equal(fs.readFileSync(finalPath, "utf8"), "last-known-good");
+  assert.equal(fs.readFileSync(renderLogPath, "utf8"), beforeRejectedRender, "protected delivery is rejected before rendering");
+  const revision = renderOutput(jobRoot, "high", path.join(jobRoot, "output/final.candidate.mp4"));
+  assert.equal(revision.receipt.mode, "monolithic");
+  assert.equal(fs.readFileSync(finalPath, "utf8"), "last-known-good");
+
+  const auditWorkflow = readJson(path.join(jobRoot, "state/workflow.json"));
+  auditWorkflow.mode = "auto";
+  writeJson("state/workflow.json", auditWorkflow);
+  const auditOutput = path.join(jobRoot, "previews/audit.mp4");
+  const auditRender = renderOutput(jobRoot, "standard", auditOutput);
+  assert.equal(auditRender.receipt.mode, "monolithic");
+  assert.equal(verifyAssemblyReceipt(jobRoot, "previews/audit.mp4", { quality: "standard" }).mode, "monolithic");
+
+  process.env.CUT_MOTION_TEST_BAD_AUDIO = "true";
+  try {
+    const rejectedOutput = path.join(jobRoot, "output/bad-duration.mp4");
+    assert.throws(() => renderOutput(jobRoot, "high", rejectedOutput), /duration differs/);
+    assert.equal(fs.existsSync(rejectedOutput), false, "bad output is never promoted");
+    assert.equal(fs.readFileSync(finalPath, "utf8"), "last-known-good");
+  } finally {
+    delete process.env.CUT_MOTION_TEST_BAD_AUDIO;
+  }
+
+  const sourceRender = spawnSync("ffmpeg", ["-y", "-v", "error",
+    "-f", "lavfi", "-i", "color=black:s=160x284:r=30:d=2",
+    "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo:d=2",
+    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", mediaPath
+  ], { encoding: "utf8" });
+  assert.equal(sourceRender.status, 0, sourceRender.stderr);
+  const musicPath = path.join(jobRoot, "hyperframes/assets/music.wav");
+  const musicRender = spawnSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", musicPath], { encoding: "utf8" });
+  assert.equal(musicRender.status, 0, musicRender.stderr);
+  writeJson("state/beat-map.json", { fps: 30, duration: 2, beats: [] });
+  auditWorkflow.authoritativeMediaSha256 = sha256File(mediaPath);
+  writeJson("state/workflow.json", auditWorkflow);
+  const mixedTemplate = fs.readFileSync(path.join(jobRoot, "hyperframes/index.template.html"), "utf8")
+    .replace('<audio id="source-audio" src="./assets/a-roll.mp4"></audio>',
+      '<audio id="source-audio" src="./assets/a-roll.mp4" data-start="0" data-duration="__CUT_MOTION_DURATION__" data-media-start="0" data-volume="1"></audio>')
+    + '<audio src="./assets/music.wav" data-render-audio="post-mix" data-start="0.5" data-duration="1" data-volume="0.3" data-fade-out-start="0.9" data-fade-out-duration="0.6"></audio>';
+  write("hyperframes/index.template.html", mixedTemplate);
+  const mixedManifest = deriveRenderManifest(jobRoot);
+  assert.equal(singlePassAudioSupported(jobRoot, mixedManifest), true);
+  assert.equal(resolvePostMixAudioTags(jobRoot)[0].sourcePath, fs.realpathSync(musicPath));
+  write("hyperframes/index.template.html", mixedTemplate.replace('data-fade-out-duration="0.6"', 'data-fade-out-duration="-0.6"'));
+  assert.equal(singlePassAudioSupported(jobRoot, mixedManifest), false);
+  assert.throws(() => resolvePostMixAudioTags(jobRoot), /Invalid post-mix/);
+  write("hyperframes/index.template.html", mixedTemplate);
+  const mixedOutput = path.join(jobRoot, "output/mixed.candidate.mp4");
+  const mixedRender = renderOutput(jobRoot, "high", mixedOutput, { mode: "chunked" });
+  assert.equal(mixedRender.mode, "chunked");
+  assert.equal(mixedRender.renderedChunks, 1);
+  assert.equal(mixedRender.receipt.totalFrames, 60);
+  assert.equal(verifyAssemblyReceipt(jobRoot, "output/mixed.candidate.mp4", { quality: "high" }).mode, "chunked");
+  const volume = spawnSync("ffmpeg", ["-i", mixedOutput, "-vn", "-af", "volumedetect", "-f", "null", "-"], { encoding: "utf8" });
+  assert.equal(volume.status, 0, volume.stderr);
+  assert.ok(Number(/max_volume:\s*(-?[0-9.]+) dB/.exec(volume.stderr)?.[1]) > -60, "post-mix tone is audible over silent A-roll");
+  const cacheReuse = renderOutput(jobRoot, "high", path.join(jobRoot, "output/mixed-again.mp4"), { mode: "chunked" });
+  assert.equal(cacheReuse.renderedChunks, 0);
+  assert.equal(cacheReuse.reusedChunks, 1);
+  assert.equal(renderOutput(jobRoot, "high", mixedOutput, { mode: "chunked" }).reused, true);
+  const environmentReceipt = readJson(`${mixedOutput}.render.json`);
+  environmentReceipt.rendererFingerprint = "0".repeat(64);
+  writeJsonAtomic(`${mixedOutput}.render.json`, environmentReceipt);
+  assert.throws(() => verifyAssemblyReceipt(jobRoot, "output/mixed.candidate.mp4"), /renderer environment is stale/);
+
+  console.log("Render core tests passed");
+} finally {
+  fs.rmSync(temporaryRoot, { recursive: true, force: true });
+}

@@ -56,6 +56,10 @@ const layers = captions.cues.map((cue, index) => {
     || !cue.lines[0].trim() || /[\r\n]/.test(cue.lines[0])) {
     throw new Error(`${cue.id}: must contain exactly one rendered line`);
   }
+  if (cue.fitFontSizePx !== undefined && (!Number.isFinite(cue.fitFontSizePx)
+    || cue.fitFontSizePx < style.minimumFontSizePx || cue.fitFontSizePx > style.fontSizePx)) {
+    throw new Error(`${cue.id}: fitted caption font size is outside the design system range`);
+  }
   const cueProperties = Number.isFinite(cue.fitFontSizePx)
     ? `${customProperties};--caption-size:${cue.fitFontSizePx}px`
     : customProperties;

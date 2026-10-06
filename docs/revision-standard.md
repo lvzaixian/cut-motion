@@ -6,13 +6,13 @@ Use this standard for revisions to an existing job. It adds no approval gate or 
 
 Read `state/project.json`, `state/workflow.json`, the latest delivery receipt, and the affected authored sources. Identify the actual file the user reviewed. A new asset with the same filename is a new input: inspect its current pixels, dimensions, and crop, then rebuild affected output. Do not reuse a cached result based on its path alone.
 
-Resolve frame rate once from the user's delivery choice, otherwise use the 30 fps default in the Rough-Cut Golden Standard. Keep that rate in the project, frame calculations, composition, and render flags. A 29.97 fps source does not override the 30 fps default; do not add conversion stages merely to preserve the source's fraction.
+Resolve frame rate once from the user's delivery choice, otherwise preserve the source/timeline rate already recorded by this job. Keep that rate in the project, frame calculations, composition and render flags; never change an existing 60 fps job to 30 fps on revision.
 
 Use `workflow-state.mjs reopen` at the earliest affected stage. If workflow state and delivered evidence disagree, report and reconcile that discrepancy; do not fabricate state completion or silently run a second workflow in an ad hoc script.
 
 ## Scoped visual revisions
 
-After the initial motion plan is established, use `docs/motion-plan.md` and the creative-confirmation package as the approved baseline. In `review`, apply a clearly scoped change to the affected Beat Map entry and HyperFrames module, then rebuild the composition; use `reopen composition` for a named MG's copy, cue, timing, placement, or addition/removal. Record state changes in workflow history and reserve `replan` for ambiguous requests or changes to the overall story, axis, or visual system. For completed jobs in `auto` or with `automatic-fallback`, route changes to Beat Map or caption authority through `motion-plan` and regenerate the package; use `composition` only for implementation changes that preserve those authorities.
+After the initial motion plan is established, use `docs/motion-plan.md` and the creative-confirmation package as the approved baseline. Use `reopen motion-plan` for caption segmentation, MG node additions/removals, copy, semantic timing, style or axis changes, and refresh the visual package for the existing user decision. Use `reopen composition` only for parameter changes preserving meaning, nodes, copy, style and axis, such as position, size, color, mask and easing. Record the scope in workflow history. For completed jobs in `auto` or with `automatic-fallback`, route changes to Beat Map or caption authority through `motion-plan` and regenerate the package; use `composition` only for implementation changes that preserve those authorities.
 
 ## Diagnose a feedback family
 
@@ -36,7 +36,7 @@ For spotlight emphasis, keep one source image inside one fixed viewport. Darken 
 
 For multiple covers, a direct fan reveal is one available grammar. Avoid preparatory shuffling or extra bounces without a semantic reason. References supply relationships and choreography, not compulsory coordinates, durations, or templates.
 
-Face coverage needs no separate approval or safety note. Preserve caption clearance, group replacement and canvas bounds.
+Face coverage adds no separate user decision; record its viewer benefit in the existing plan and preserve captions, PiP, evidence, protected UI, group replacement and canvas bounds.
 
 ## Captions and small text revisions
 
@@ -52,10 +52,10 @@ For a requested size increase, scale the settled size, retain the chosen segment
 
 Choose one half-open deletion range on the declared delivery frame grid. Derive removed seconds from its frame count. Use the same edit for video, audio, captions, MG windows, micro-events, and directly owned supporting video/audio. Do not shift asset-local `data-media-start` values as if they were composition time.
 
-`scripts/shift-timestamps.sh <input.json> <cut-start-seconds> <cut-end-seconds> <new-output.json> [fps]` generates a candidate caption document or Beat Map. It reads the document fps or the explicit fps, requires frame-aligned boundaries, removes wholly deleted items, updates caption frame/second fields together, and rejects partial intersections. It preserves wording and IDs. It deliberately does not alter transcript words, HTML/GSAP, source media, or unrelated nested timestamps.
+`scripts/shift-timestamps.sh <input.json> <cut-start-seconds> <cut-end-seconds> <new-output.json> [fps]` generates a candidate caption document or Beat Map. It reads the document fps or the explicit fps, requires frame-aligned boundaries, removes wholly deleted items, updates caption frame/second fields together, and rejects partial intersections. It preserves wording and IDs. It shifts declared object-cue and material windows with the Beat Map, but deliberately does not alter transcript words, HTML/GSAP, source media or unrelated nested timestamps. Rebuild or invalidate keyword evidence and source-window mappings after a timing change.
 
 For an editable revision, re-align the current transcript from immutable source evidence, reconcile surviving word/cue references, apply the candidate timing, rebuild media and HyperFrames, and refresh the creative package/render manifest. Include direct media children and raw absolute GSAP times in the affected scope. Candidate JSON alone is not a synchronized job. Do not clamp a cut-through word, caption, or animation to a zero-length item; resolve the new local meaning first.
 
 For a final removal after visuals are settled, precision trimming a completed HyperFrames master can preserve all layers as one picture. Record the parent file/hash, kept source frame intervals, new frame count, and revised subtitle/motion timing in a delivery edit map. Keep the editable parent intact and identify the edit map as an additional reproducible delivery step. Do not claim the parent composition now uses the shorter timeline. Avoid repeated lossy trims by returning to the same parent master for later cut revisions.
 
-Export revisions directly to `output/final.mp4`, use the existing media checks, then record completion with `advance --artifact output/final.mp4`. When asked to stop, stop the owned render process if still active; if it already completed, report that accurately and do not start another render.
+Render revisions to `output/final.candidate.mp4`, preserve the last usable `final.mp4`, regenerate the title workbook bound to the candidate hash, then let `advance --artifact output/final.candidate.mp4` validate and promote it. When asked to stop, stop the owned render process if still active; if it already completed, report that accurately and do not start another render.

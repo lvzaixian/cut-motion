@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { parseReferenceScript, buildReferenceScriptAnnotations } from "../scripts/reference-script-annotations.mjs";
 import { buildBeatMap, buildReleasedTranscript, buildCaptionPlan, buildReconciliationItems, buildSourceWordEvidence } from "../scripts/plan-artifacts.mjs";
 import { resolveComponent } from "../scripts/motion-template-library.mjs";
-import { sha256File } from "../scripts/workflow-utils.mjs";
+import { sha256File, computeCreativeDocumentFingerprints } from "../scripts/workflow-utils.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cut-motion-planning-"));
@@ -23,6 +23,11 @@ const script = (name, argumentsList, expectSuccess = true, failurePattern = null
 };
 const readJson = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 const writeJson = (file, value) => fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
+const captionFixture = () => {
+  const fixture = readJson(path.join(repositoryRoot, "tests/fixtures/captions.approved-semantic.json"));
+  fixture.style.maximumDisplayUnits = 11.8;
+  return fixture;
+};
 
 try {
   const source = { segments: [{ id: "split", words: [{ text: "你好", start: 0, end: 1 }] }, { id: "later", words: [{ text: "再见", start: 2, end: 3 }] }] };
@@ -197,16 +202,18 @@ try {
   const captions = path.join(job, "captions", "captions.json");
   const pages = path.join(job, "captions", "chatcut-pages.json");
   const reviewPlan = path.join(job, "captions", "caption-review-plan.json");
-  fs.copyFileSync(path.join(repositoryRoot, "tests", "fixtures", "captions.approved-semantic.json"), captions);
+  writeJson(captions, captionFixture());
   fs.copyFileSync(path.join(repositoryRoot, "tests", "fixtures", "chatcut-caption-pages.json"), pages);
   fs.copyFileSync(transcript, path.join(job, "state", "transcript.json"));
   const approvedPlan = readJson(path.join(repositoryRoot, "tests", "fixtures", "caption-review-plan.json"));
   approvedPlan.status = "approved";
+  approvedPlan.rules.targetDisplayUnits = [4, 10.5];
+  approvedPlan.rules.maximumDisplayUnits = 11.8;
   writeJson(reviewPlan, approvedPlan);
   script("check-captions.mjs", [captions, pages, design]);
 
   const legacyPages = readJson(pages);
-  legacyPages.cleanExport = true;
+  legacyPages.cleanExport = "roughcut/a-roll.mp4";
   legacyPages.pages = legacyPages.pages.map((page) => ({
     id: page.id,
     start: page.startFrame / legacyPages.fps,
@@ -215,7 +222,7 @@ try {
   }));
   const currentCaptions = readJson(captions);
   writeJson(pages, legacyPages);
-  writeJson(captions, { ...currentCaptions, source: { ...currentCaptions.source, cleanExport: true } });
+  writeJson(captions, { ...currentCaptions, source: { ...currentCaptions.source, cleanExport: "roughcut/a-roll.mp4" } });
   script("check-captions.mjs", [captions, pages, design]);
   const relaxedPlan = structuredClone(approvedPlan);
   const relaxedCaptions = readJson(captions);
@@ -233,13 +240,13 @@ try {
   writeJson(reviewPlan, relaxedPlan);
   writeJson(captions, relaxedCaptions);
   writeJson(design, relaxedDesign);
-  script("check-captions.mjs", [captions, pages, design]);
+  script("check-captions.mjs", [captions, pages, design], false, /display units|punctuation|binding/);
   writeJson(reviewPlan, approvedPlan);
   fs.writeFileSync(design, baselineDesignText);
-  fs.copyFileSync(path.join(repositoryRoot, "tests", "fixtures", "captions.approved-semantic.json"), captions);
+  writeJson(captions, captionFixture());
   fs.copyFileSync(path.join(repositoryRoot, "tests", "fixtures", "chatcut-caption-pages.json"), pages);
   const cardPages = readJson(pages);
-  cardPages.cleanExport = true;
+  cardPages.cleanExport = "roughcut/a-roll.mp4";
   cardPages.cards = cardPages.pages.map((page) => ({
     id: page.id,
     startFrame: page.startFrame,
@@ -249,9 +256,9 @@ try {
   }));
   delete cardPages.pages;
   writeJson(pages, cardPages);
-  writeJson(captions, { ...currentCaptions, source: { ...currentCaptions.source, cleanExport: true } });
+  writeJson(captions, { ...currentCaptions, source: { ...currentCaptions.source, cleanExport: "roughcut/a-roll.mp4" } });
   script("check-captions.mjs", [captions, pages, design]);
-  fs.copyFileSync(path.join(repositoryRoot, "tests", "fixtures", "captions.approved-semantic.json"), captions);
+  writeJson(captions, captionFixture());
   fs.copyFileSync(path.join(repositoryRoot, "tests", "fixtures", "chatcut-caption-pages.json"), pages);
 
   const sourcePages = readJson(pages);
@@ -395,6 +402,10 @@ try {
     timelineId: "fixture-timeline",
     corrections: {},
     lexicon: { protectedTerms: ["新工具"], forbiddenStandaloneCues: [] },
+    cueExceptions: {
+      "caption-0002": { kind: "meaningful-short-closing", reason: "完整句末谓语" },
+      "caption-0004": { kind: "meaningful-short-closing", reason: "完整口语判断" }
+    },
     cueLines: [
       { segmentId: "s1", fromWord: 1, toWord: 3 },
       { segmentId: "s2", fromWord: 1, toWord: 3 }
@@ -464,7 +475,7 @@ try {
   assert.equal(readJson(path.join(planJob, "captions/chatcut-pages.json")).roughCutLocked, true);
   assert.equal(readJson(path.join(planJob, "captions/chatcut-pages.json")).captionRenderDisabled, true);
   fs.appendFileSync(path.join(planJob, "roughcut/a-roll.mp4"), "changed");
-  script("generate-plan.mjs", [planJob, "--write", "--legacy-source-timing"]);
+  script("generate-plan.mjs", [planJob, "--write", "--legacy-source-timing"], false, /Locked A-roll changed/);
   fs.writeFileSync(path.join(planJob, "roughcut/a-roll.mp4"), "not-a-real-file");
   fs.appendFileSync(path.join(planJob, "state/source-transcript.json"), " ");
   script("generate-plan.mjs", [planJob, "--write", "--legacy-source-timing"], false, /Source transcript changed/);
@@ -483,7 +494,7 @@ try {
   assert.equal(derivedBeats.beats[1].typography.fontFamily, "Smiley Sans");
   assert.deepEqual(derivedBeats.beats[1].captionCueIds, ["caption-0002"]);
   script("check-caption-review-plan.mjs", [path.join(planJob, "captions", "caption-review-plan.json")]);
-  script("check-transcript-reconciliation.mjs", [path.join(planJob, "state", "transcript-reconciliation.json"), "--expected-media", "input/source.mp4"]);
+  script("check-transcript-reconciliation.mjs", [path.join(planJob, "state", "transcript-reconciliation.json"), "--expected-media", "roughcut/a-roll.mp4"]);
 
   const manualMainJob = path.join(temporaryRoot, "manual-main-caption-job");
   fs.cpSync(planJob, manualMainJob, { recursive: true });
@@ -555,14 +566,25 @@ try {
   script("generate-plan.mjs", [sparseMainJob, "--write", "--replace-existing"]);
   assert.equal(readJson(path.join(sparseMainJob, "captions/chatcut-pages.json")).timelineVersion,
     "chatcut-timeline-main-caption-fixture", "the shared wrapper parser preserves main-timeline identity as well as text");
+  script("promote-caption-review-plan.mjs", [manualMainJob], false, /Creative confirmation is not approved/);
+  // Software fixture only: bind a prepared package to exercise caption
+  // promotion after the gate. This does not approve a real production job.
+  const fixtureConfirmationPath = path.join(manualMainJob, "state/creative-confirmation.json");
+  const fixtureConfirmation = readJson(fixtureConfirmationPath);
+  fixtureConfirmation.review.status = "approved";
+  writeJson(fixtureConfirmationPath, fixtureConfirmation);
+  const fixtureWorkflowPath = path.join(manualMainJob, "state/workflow.json");
+  const fixtureWorkflow = readJson(fixtureWorkflowPath);
+  fixtureWorkflow.creativeConfirmationSha256 = sha256File(fixtureConfirmationPath);
+  fixtureWorkflow.creativeDocumentFingerprints = computeCreativeDocumentFingerprints(manualMainJob, "subtitles");
+  writeJson(fixtureWorkflowPath, fixtureWorkflow);
   script("promote-caption-review-plan.mjs", [manualMainJob]);
   const promotedManualCaptions = readJson(path.join(manualMainJob, "captions", "captions.json"));
   assert.deepEqual(promotedManualCaptions.cues.map((cue) => cue.viewerText), ["今天我要", "演示", "这个新工具", "很好用"]);
   assert.deepEqual(promotedManualCaptions.cues.map(({ start, end }) => [start, end]), [[0.5, 1.3], [1.3, 2.4], [3, 4.2], [4.2, 5.4]]);
   const manualCaptionDoc = fs.readFileSync(path.join(manualMainJob, "docs", "caption-plan.md"), "utf8");
-  assert.match(manualCaptionDoc, /按中文自然短语切分/);
-  assert.match(manualCaptionDoc, /每行不超过 10 个显示单位/);
-  assert.doesNotMatch(manualCaptionDoc, /4–10\.5 个显示单位/);
+  assert.match(manualCaptionDoc, /先按完整词组/);
+  assert.match(manualCaptionDoc, /4–10\.5 个显示单位/);
   assert.doesNotMatch(manualCaptionDoc, /每个条目一条/);
 
   const heuristicJob = path.join(temporaryRoot, "caption-heuristic-job");
@@ -604,7 +626,8 @@ try {
   };
   const heuristicPlanPath = path.join(heuristicJob, "captions", "caption-review-plan.json");
   writeJson(heuristicPlanPath, heuristicPlan);
-  script("check-caption-review-plan.mjs", [heuristicPlanPath]);
+  script("check-caption-review-plan.mjs", [heuristicPlanPath], false, /binding|one-character|function word/);
+  heuristicPlan.rules = { ...approvedPlan.rules, protectedTerms: [], forbiddenStandaloneCues: ["的"] };
   const captionSchema = readJson(path.join(repositoryRoot, "schemas", "captions.schema.json"));
   assert.deepEqual(captionSchema.properties.style.properties.maximumDisplayUnits, { type: "number" });
   const reviewPlanSchema = readJson(path.join(repositoryRoot, "schemas", "caption-review-plan.schema.json"));
@@ -720,7 +743,7 @@ try {
   const exampleBeats = readJson(path.join(planJob, "state", "beat-map.json"));
   const generatedCaptionPlan = readJson(path.join(planJob, "captions", "caption-review-plan.json"));
   assert.equal(readJson(path.join(planJob, "captions", "chatcut-pages.json")).timelineVersion, "chatcut-timeline-fixture-timeline");
-  assert.equal(generatedCaptionPlan.segmentationAuthority, "agent-authored phrase cues within ChatCut main timeline entries");
+  assert.equal(generatedCaptionPlan.segmentationAuthority, "agent-authored sparse phrases");
   assert.deepEqual(generatedCaptionPlan.cues.map((cue) => cue.text), ["今天我要", "演示", "这个新工具", "很好用"]);
   assert.equal(exampleBeats.beats[1].templateId, "annotation");
   assert.deepEqual(exampleBeats.beats[1].templateData.copy, ["演示见片尾"]);
@@ -764,7 +787,7 @@ try {
   const reorderedReconciliation = readJson(reconciliationPath);
   assert.deepEqual(reorderedReconciliation.items.map((item) => item.segmentId), ["s2", "s1"]);
   assert.deepEqual(reorderedReconciliation.referenceScript.itemOrder, ["r-s1", "r-s2"]);
-  script("check-transcript-reconciliation.mjs", [reconciliationPath, "--expected-media", "input/source.mp4"]);
+  script("check-transcript-reconciliation.mjs", [reconciliationPath, "--expected-media", "roughcut/a-roll.mp4"]);
   reorderedReconciliation.referenceScript.itemOrder = ["r-s1", "r-s1"];
   writeJson(reconciliationPath, reorderedReconciliation);
   script("check-transcript-reconciliation.mjs", [reconciliationPath], false, /every reference-bearing item exactly once/);

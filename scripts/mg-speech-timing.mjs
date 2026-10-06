@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { chatcutPages, chatcutText, unwrapChatcut, normalizeCaptionCards } from "./chatcut-caption-data.mjs";
+import { templateMicroEvents } from "./motion-template-library.mjs";
 
 const digest = file => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 const read = file => JSON.parse(fs.readFileSync(file, "utf8"));
@@ -21,7 +22,7 @@ function retainMeasuredWords(jobRoot, next) {
     const windowsPath = path.join(jobRoot, "state/timeline-source-windows.json");
     if (!fs.existsSync(windowsPath) || previous.windowsSha256 !== digest(windowsPath)) return next;
   }
-  const retained = (previous.words ?? []).filter(word => word.timingProvenance !== "estimated"
+  const retained = (previous.words ?? []).filter(word => word.timingProvenance === "measured"
     && Number.isInteger(word.startFrame) && Number.isInteger(word.endFrame) && word.endFrame > word.startFrame);
   const added = next.words.filter(word => !retained.some(existing => existing.segmentId === word.segmentId
     && normalize(existing.text) === normalize(word.text) && existing.startFrame < word.endFrame && word.startFrame < existing.endFrame));
@@ -39,7 +40,8 @@ export function mapSourceWord(word, clip, fps) {
   const frameAt = sourceUs => clip.timelineStartFrame + (sourceUs - clip.srcStartUs) / 1e6 * fps / rate;
   const startFrame = Math.min(clipEnd, ceilFrame(frameAt(sourceStartUs)));
   const endFrame = Math.min(clipEnd, ceilFrame(frameAt(sourceEndUs)));
-  return endFrame > startFrame ? { ...word, sourceStartUs, sourceEndUs, startFrame, endFrame, itemId: clip.itemId } : null;
+  return endFrame > startFrame ? { ...word, sourceStartUs, sourceEndUs, startFrame, endFrame, itemId: clip.itemId,
+    playbackRateNumerator: clip.playbackRateNumerator, playbackRateDenominator: clip.playbackRateDenominator } : null;
 }
 
 export function prepareSpeechTiming(jobRoot, lookup) {
@@ -97,7 +99,10 @@ export function prepareSpeechTiming(jobRoot, lookup) {
             && entry.sourceRange.start < mapped.sourceEndUs && mapped.sourceStartUs < entry.sourceRange.end);
           for (const entry of entries) {
             const key = `${entry.segmentId}:${clip.itemId}:${sourceWord.sourceStartUs}:${sourceWord.sourceEndUs}:${normalize(sourceWord.text)}`;
-            records.set(key, { ...mapped, segmentId: entry.segmentId });
+            const bounded = mapSourceWord({ ...sourceWord,
+              sourceStartUs: Math.max(sourceWord.sourceStartUs, entry.sourceRange.start),
+              sourceEndUs: Math.min(sourceWord.sourceEndUs, entry.sourceRange.end) }, clip, fps);
+            if (bounded) records.set(key, { ...bounded, timingProvenance: "measured", segmentId: entry.segmentId });
           }
         }
       }
@@ -116,11 +121,13 @@ export function loadSpeechTiming(jobRoot, expectedFps) {
     || (timing.windowsSha256 !== undefined && timing.windowsSha256 !== digest(path.join(jobRoot, "state/timeline-source-windows.json")))) {
     throw new Error("MG speech timing is stale; regenerate against the approved timeline");
   }
+  if (!["chatcut.find_transcript", "chatcut.read_captions"].includes(timing.provider)
+    || !Array.isArray(timing.words) || timing.words.some(word => word.timingProvenance !== "measured")) throw new Error("MG speech timing requires measured ChatCut word evidence");
   const inputsPath = path.join(jobRoot, "state/planning-inputs.json");
   return fs.existsSync(inputsPath) ? { ...timing, corrections: read(inputsPath).corrections ?? {} } : timing;
 }
 
-export function keywordFrame(timing, cue) {
+export function keywordAnchor(timing, cue) {
   const words = timing.words.filter(word => word.segmentId === cue.segmentId);
   const normalized = words.map(word => normalize(word.text));
   const text = normalized.join("");
@@ -144,13 +151,70 @@ export function keywordFrame(timing, cue) {
         ? next.sourceStartUs - word.sourceEndUs > 500000
         : next.startFrame - word.endFrame > timing.fps * .5;
     })) continue;
-    if (!matchedOffsets.has(at)) { matchedOffsets.add(at); matches.push(words[first].startFrame); }
+    if (!matchedOffsets.has(at)) { matchedOffsets.add(at); matches.push(words[first]); }
   }
-  matches.sort((a, b) => a - b);
+  matches.sort((a, b) => a.startFrame - b.startFrame);
   if (Number.isInteger(cue.occurrence) && cue.occurrence > 0 && cue.occurrence <= matches.length) return matches[cue.occurrence - 1];
   if (cue.occurrence !== undefined) throw new Error(`${cue.segmentId}/${cue.keyword}: occurrence does not resolve; refine only this anchor`);
   if (matches.length !== 1) throw new Error(`${cue.segmentId}/${cue.keyword}: expected one word anchor, found ${matches.length}; refine the cue or fetch its word timestamps`);
   return matches[0];
+}
+
+export function keywordFrame(timing, cue) {
+  return keywordAnchor(timing, cue).startFrame;
+}
+
+/** Freeze measured anchors into the released transcript before package review.
+ * Caption coverage still uses segments.words; these anchors never add speech.
+ */
+export function finalizeSpeechPlan(transcript, beatMap, timing, designSystem) {
+  const bySegment = new Map(transcript.segments.map(segment => [segment.id, segment]));
+  const anchors = [], anchorByWord = new Map(), counts = new Map();
+  for (const word of timing.words) {
+    const segment = bySegment.get(word.segmentId);
+    if (!segment || word.timingProvenance !== "measured" || !Number.isInteger(word.startFrame) || !Number.isInteger(word.endFrame)
+      || word.endFrame <= word.startFrame || word.startFrame / timing.fps < segment.start - 1e-6 || word.endFrame / timing.fps > segment.end + 1e-6) throw new Error("MG measured word must remain inside its released transcript segment");
+    const ordinal = (counts.get(word.segmentId) ?? 0) + 1;
+    counts.set(word.segmentId, ordinal);
+    const anchor = { ...word, id: `${word.segmentId}:measured-word-${String(ordinal).padStart(3, "0")}`,
+      start: Number((word.startFrame / timing.fps).toFixed(6)), end: Number((word.endFrame / timing.fps).toFixed(6)),
+      timingProvenance: "measured", provider: timing.provider, snapshotSha256: timing.snapshotSha256,
+      ...(timing.sourceSha256 ? { sourceSha256: timing.sourceSha256 } : {}),
+      ...(timing.windowsSha256 ? { windowsSha256: timing.windowsSha256 } : {}) };
+    anchors.push(anchor); anchorByWord.set(word, anchor);
+  }
+  transcript.timingAnchors = anchors;
+  const policy = designSystem.motionProfiles?.["thoughtful-editorial-v1"]?.cueTiming;
+  const scale = frames => Math.max(0, Math.floor(frames * timing.fps / (policy?.referenceFps ?? 60)));
+  for (const beat of beatMap.beats) {
+    if (!beat.templateData?.revealCues) continue;
+    const window = { start: beat.start, exitStartTime: beat.end };
+    const times = resolveRevealTimes(beat, window, timing);
+    beat.templateData.revealTimes = times;
+    if (beat.motionProfile !== "thoughtful-editorial-v1") continue;
+    if (beat.objectCues?.length && beat.objectCues.length !== times.length) throw new Error(`${beat.id}: objectCues and revealCues need the same slot count`);
+    beat.objectCues = times.map((time, index) => {
+      const binding = beat.templateData.revealCues[index];
+      const frame = Math.round((beat.start + time) * timing.fps);
+      const existing = beat.objectCues?.[index] ?? {};
+      const word = binding.keyword ? keywordAnchor(timing, binding)
+        : timing.words.filter(word => beat.sourceSegmentIds.includes(word.segmentId) && word.startFrame <= frame).at(-1);
+      const anchor = anchorByWord.get(word);
+      if (!anchor || frame - word.startFrame > scale(policy?.maxFirstLegibleDelayFrames ?? 6)) throw new Error(`${beat.id}: decorative cue needs a nearby measured speech anchor; refine the cue instead of estimating a word`);
+      const first = frame;
+      return { ...existing, id: existing.id ?? `object-${String(index + 1).padStart(3, "0")}`,
+        semanticRole: existing.semanticRole ?? binding.keyword ?? "spoken semantic element", spokenTriggerWordId: anchor.id,
+        preMotionFrame: existing.preMotionFrame ?? first,
+        firstLegibleFrame: first,
+        settledFrame: existing.settledFrame ?? Math.min(Math.round(beat.end * timing.fps), first + scale(9)),
+        exitTriggerWordId: existing.exitTriggerWordId ?? beat.exitAnchorWordId,
+        invisibleFrame: existing.invisibleFrame ?? Math.round(beat.end * timing.fps),
+        holdKind: existing.holdKind ?? (beat.visualDecision?.evolutionMode === "evolve" ? "causal-sequence" : beat.surfaceTreatment === "evidence-surface" ? "evidence-reading" : "standard") };
+    });
+    if (!beat.entryAnchorWordId || /:word-001$/.test(beat.entryAnchorWordId)) beat.entryAnchorWordId = beat.objectCues[0].spokenTriggerWordId;
+    if (beat.microEvents === undefined) beat.microEvents = templateMicroEvents(beat, timing.fps);
+  }
+  return { transcript, beatMap };
 }
 
 export function resolveRevealTimes(beat, window, timing) {

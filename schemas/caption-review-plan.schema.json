@@ -27,7 +27,7 @@
           "end": { "type": "number", "exclusiveMinimum": 0 },
           "startWordId": { "type": "string", "pattern": "^.+:word-[0-9]{3}$" },
           "endWordId": { "type": "string", "pattern": "^.+:word-[0-9]{3}$" },
-          "fitFontSizePx": { "type": "number", "minimum": 1 }
+          "fitFontSizePx": { "type": "number", "minimum": 88, "maximum": 96 }
         },
         "oneOf": [
           {

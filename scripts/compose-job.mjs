@@ -4,7 +4,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { readJson } from "./workflow-utils.mjs";
+import { assertCompositionReady, readJson } from "./workflow-utils.mjs";
 import { resolveBeatRenderWindow, transcriptWordsById } from "./motion-window-utils.mjs";
 
 const [job, ...extra] = process.argv.slice(2);
@@ -21,11 +21,17 @@ const run = (script, args) => {
   if (result.status !== 0) process.exit(result.status ?? 1);
 };
 let workflow = readJson(workflowPath);
-if (!["motion-plan", "composition"].includes(workflow.currentState)) throw new Error("Compose after generating plans, or reopen composition for a revision");
+if (!["motion-plan", "visual-arrangement-review", "composition"].includes(workflow.currentState)) throw new Error("Compose after generating plans, or reopen composition for a revision");
 if (workflow.currentState === "motion-plan") {
   run("workflow-state.mjs", [workflowPath, "advance", "--artifact", "docs/motion-plan.md"]);
   workflow = readJson(workflowPath);
 }
+if (workflow.currentState === "visual-arrangement-review") {
+  console.log(`Visual arrangement ready for user review: ${path.join(root, "docs", "creative-confirmation.md")}`);
+  console.log(`After approval: node scripts/workflow-state.mjs ${workflowPath} approve-visual-arrangement --actor user --note <feedback>`);
+  process.exit(0);
+}
+assertCompositionReady(root, workflow);
 run("assemble-mg.mjs", [root, "--write"]);
 if (workflow.captionMode === "subtitles") {
   run("promote-caption-review-plan.mjs", [root]);

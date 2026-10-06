@@ -25,12 +25,12 @@ globalThis.fetch = async (url, options) => {
   if(scenario === 'tools-error') return Response.json(error);
   return Response.json({result:{tools:scenario === 'bad-tools' ? {} : [{name:'read_script'}]}});
 };`);
-  const run = (scenario, hasConfig = true) => {
+  const run = (scenario, hasConfig = true, endpoint = "https://example.invalid/mcp?private=query") => {
     fs.writeFileSync(trace, "");
     const result = spawnSync(process.execPath, ["--import", hook, script, "--quiet"], {
       encoding: "utf8",
       env: { ...process.env,
-        CUT_MOTION_CHATCUT_MCP_URL: hasConfig ? "https://example.invalid/mcp?private=query" : "",
+        CUT_MOTION_CHATCUT_MCP_URL: hasConfig ? endpoint : "",
         CUT_MOTION_CHATCUT_MCP_TOKEN: secret,
         CUT_MOTION_CHATCUT_TOKEN_FILE: "",
         CUT_MOTION_CHATCUT_CONFIGS: path.join(directory, "nonexistent-config.json"),
@@ -63,6 +63,13 @@ globalThis.fetch = async (url, options) => {
   assert.match(unknown.output, /unknown.*no HTTP endpoint/);
   assert.doesNotMatch(unknown.output, /missing\s+chatcut/);
   assert.equal(unknown.calls.length, 0);
+  const insecure = run("success", true, "http://example.invalid/mcp");
+  assert.equal(insecure.status, 64);
+  assert.equal(insecure.calls.length, 0);
+  assert.match(insecure.output, /requires HTTPS/);
+  for (const endpoint of ["http://localhost/mcp", "http://127.0.0.1/mcp", "http://[::1]/mcp"]) {
+    assert.equal(run("success", true, endpoint).status, 0);
+  }
   console.log("ChatCut endpoint diagnostic tests passed.");
 } finally {
   fs.rmSync(directory, {recursive:true, force:true});

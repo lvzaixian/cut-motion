@@ -1,10 +1,6 @@
 # Subtitle Segmentation Standard
 
-Use the approved ChatCut main-timeline transcript entries as the source for caption wording. Correct terminology and split only entries that need natural Chinese phrase boundaries in `state/planning-inputs.json`; do not rewrite every caption. Keep each rendered line to at most 10 display units: count each Chinese character as 1 and each 3 English characters as about 1. This is a writing rule, not an automated splitter or a new review gate.
-
-The generator applies `corrections:{"原识别":"确认后的用词"}` once to the released transcript and every derived caption. Prefer `captionEdits:{"main-003":["一个完整短语","下一个短语"]}` for necessary phrase splits; all other entries keep their existing boundaries. The tool locates existing measured token boundaries first, then matching caption-card boundaries. Without exact coverage, it allocates caption-only frame ranges within that parent entry; those estimates never become MG word evidence. Do not hand-calculate every caption time. For deliberate timing changes, use `captionEdits:{"main-003":[{"text":"一个完整短语","start":1.2,"end":2.1},...]}`; explicit seconds are preserved and must stay within the parent entry. Finish these edits before delivering the three plans. `captionCues` remains available for an intentionally authored full track.
-
-If the approved timeline already has a CaptionProgram, locate that existing program in the current project and request `read_captions({projectId:<project>,json:JSON.stringify({words:true,limit:100})})`. Save the returned pages once and set `captionTimingPath:"state/chatcut-caption-timing.json"`. When another page is returned, retain the same program, returned revision and filters, changing only its requested offset. `generate-plan.mjs` accepts the actual `structuredContent.text` card/token response or a `cards` array, reuses matching phrase cards, and applies the same corrections. Save every page in returned order. Do not create or edit ChatCut captions merely to obtain this optional data. Without it, generate from main-timeline entry ranges and author only necessary phrase splits. Neither a card range nor an estimated token is measured MG word timing.
+This standard is binding for `captionMode: subtitles`. Its purpose is natural one-line reading, not maximum cue count or fixed character packing.
 
 ## Authority
 
@@ -15,8 +11,6 @@ Wording priority is:
 3. ChatCut ASR and reviewed local fallback.
 
 `state/transcript-reconciliation.json` records every conflict. Neither a script nor ASR may introduce wording the recording does not support.
-
-Routine speech reconciliation is generated from the released transcript. Author only wording corrections and genuine conflicts; do not restate every ordinary entry as a separate evidence ledger.
 
 ## Segmentation order
 
@@ -29,23 +23,30 @@ Apply these decisions in order:
 
 Never cut raw text at a character limit before the language pass.
 
-## Structural invariants
+## Blocking rules
 
 - Exactly one rendered line per cue.
-- Cues are mutually exclusive half-open integer frame windows; touching endpoints are valid, crossfades between cues are not. Installation/build must enforce this even when an optional audit is skipped.
 - A protected term, product name, number-plus-unit, or fixed phrase cannot cross cues.
+- A particle, conjunction, or other function word cannot stand alone. One-character cues are forbidden.
+- Do not leave `的`, `了`, `着`, `过`, `啊`, `吧`, `吗`, `呢`, `与`, `和`, `但`, `所以`, `因为`, or `而` as an isolated cue.
+- Cue duration is at least 0.5 seconds; normally target 0.8–2.5 seconds.
+- Target 4–10.5 measured display units. Allow at most 11.8 units with a documented 88–96px cue-level fit; do not shrink the whole track to solve one phrase.
+- A meaningful short closing phrase may be accepted only with an explicit exception reason.
 - The concatenated cue text must reproduce the approved transcript after punctuation and spacing normalization.
 - Approved cue boundaries cannot change during composition.
 
-## Reading-quality guidance
+## Review workflow
 
-- Prefer not to isolate a particle, conjunction, or other function word; avoid one-character cues where a natural phrase can be kept together.
-- Prefer cues around 0.8–2.5 seconds. Use shorter or longer cues when the spoken phrase and timing read naturally.
-- Keep every line at or below 10 display units. Split a longer entry at natural phrase boundaries; do not shrink the whole track to solve one cue.
-- A short closing phrase may stand alone when it reads naturally; no exception record is required.
+1. Use `state/transcript.json` as authority; `captions/reference-transcript.txt` may exist only as a derived human-readable snapshot.
+2. Record names, product configurations, number-unit pairs, and fixed phrases in `captions/caption-lexicon.json`.
+3. The Agent authors each semantic cue directly in `captions/caption-review-plan.json` with `text`, `startWordId`, and `endWordId`. Code must not choose or optimize cue boundaries.
+4. Validate `captions/caption-review-plan.json` with `scripts/check-caption-review-plan.mjs`.
+5. Present every cue in `docs/caption-plan.md` when creative review is triggered.
+6. After required user approval or recorded conditional internal approval, the state machine marks the plan approved.
+7. Promote that exact plan with `scripts/promote-caption-review-plan.mjs`, validate it, and install it. Do not repaginate during composition.
 
-Keep the cue wording complete and in the approved transcript order. Keep manually authored cue times inside their parent main-timeline entry. Preserve counting, punctuation, version notation, and official-name exceptions in the job rather than silently normalizing them away. See [Editorial revisions](revision-standard.md#captions-and-small-text-revisions) for requested caption revisions.
+## Unified input and frame timing
 
-## Workflow
+New jobs can author the same decisions once in `planning-inputs.json`: sparse `captionEdits`, confirmed terminology in `corrections`, and explicit ranges only for intentional boundaries. Generation derives the review plan and documents without replacing the language pass. Existing measured caption cards can provide timing without a new CaptionProgram or transcription.
 
-Use the approved main-timeline preview as the wording and parent timing authority for a standard ChatCut plan. Keep names, product configurations, number-unit pairs and fixed phrases in the caption lexicon. Author corrections and necessary phrase edits once, then run `node scripts/generate-plan.mjs <job> --write` to generate the three plans together; do not manually synchronize their derived JSON files. Phrase timing is sufficient for routine caption plans; it does not establish MG keyword onsets. Resolve [MG internal keyword timing](mg-speech-timing.md) during the first composition preparation, and refine caption timing when a specific within-phrase adjustment is needed. `compose-job.mjs` installs the generated plan after the existing plan-package approval.
+Released cues use half-open integer windows `[startFrame, endFrame)`. Adjacent cues may touch, including fade tails, but cannot overlap. Preserve the job's frame rate and fractional-second snapping fix. Phrase spans are insufficient evidence for internal MG keyword onsets; resolve them before visual-package approval.

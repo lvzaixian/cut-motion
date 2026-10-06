@@ -2,33 +2,85 @@
 
 This document is for Agents and repository contributors. End users should follow `README.md` or `README-EN.md` and interact through natural language.
 
+## 本机本地转写：mlx-whisper
+
+**本机已经安装 `mlx-whisper`，并已有可离线复用的 Whisper large-v3 模型。新任务先检查并使用现有工具，不必重新安装或下载。** 包名为 `mlx-whisper`，CLI 名为 `mlx_whisper`（下划线）；必须调用下表的虚拟环境绝对路径，不能只检查默认 Python、`whisper` 命令或 PATH。用户未指定转写引擎且本地检查通过时，直接复用本地 ASR；ChatCut 未连接不阻断转写与内容解析，仍须在后续可编辑粗剪前恢复其能力。
+
+每期先完整转写和解析内容，再决定封面与剪辑。本地工具和 ChatCut 转写均提供原始文本与时间证据，不代替录音核对。以下包版本、CLI 参数、模型链接目标、FFmpeg 与 Metal 可用性已于 2026-10-06 核实；这次未重新运行整片推理。
+
+| 项目 | 本机位置或版本 |
+| --- | --- |
+| 已安装环境 | `/Users/maxwellbrooks/Workspace/cut-motion/jobs/07-dont-study-too-long/.venv/` |
+| Python | 上述目录的 `bin/python`，Python 3.9.6，arm64 |
+| CLI | 上述目录的 `bin/mlx_whisper`，mlx-whisper 0.4.3 |
+| MLX | mlx / mlx-metal 0.29.3；需要 Apple Silicon 与可用 Metal |
+| 模型 | `mlx-community/whisper-large-v3-mlx`，权重约 3.08 GB |
+| 固定模型目录 | `/Users/maxwellbrooks/Workspace/cut-motion/jobs/07-dont-study-too-long/.cache/huggingface/hub/models--mlx-community--whisper-large-v3-mlx/snapshots/49e6aa286ad60c14352c404340ded53710378a11` |
+
+复用时只读取旧任务运行时和模型，输入、输出与日志全部属于新任务。该环境不是全局安装；保留旧任务 `.venv` 和 `.cache`，不要把依赖移进口播目录的 `.cut-motion/`。模型快照使用指向缓存 blobs 的符号链接，只复制快照中的链接不能完成迁移。其他主机或路径不存在时先核实环境，不能假定可用。
+
+### 新任务的快速检查（不下载、不转写）
+
+```bash
+ASR_ROOT="/Users/maxwellbrooks/Workspace/cut-motion/jobs/07-dont-study-too-long"
+ASR_MODEL="$ASR_ROOT/.cache/huggingface/hub/models--mlx-community--whisper-large-v3-mlx/snapshots/49e6aa286ad60c14352c404340ded53710378a11"
+
+test -x "$ASR_ROOT/.venv/bin/mlx_whisper" &&
+test -r "$ASR_MODEL/config.json" && test -r "$ASR_MODEL/weights.npz" &&
+PATH="/opt/homebrew/bin:$PATH" command -v ffmpeg &&
+HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 "$ASR_ROOT/.venv/bin/python" \
+  -c 'import mlx.core as mx; assert mx.metal.is_available(), "Metal unavailable"; print("Metal OK")' &&
+HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 "$ASR_ROOT/.venv/bin/mlx_whisper" --help
+```
+
+核对上述每项及其报错，不能只凭文件存在宣称推理成功。通过后即可执行下方命令；失败时说明具体路径或依赖问题。仓库 `check-environment.sh check` 检查的是通用剪辑/渲染依赖，没有检查这个独立 ASR 环境；其缺少 Node/npm 的结果不能用来宣布“无法转写”，但创建任务仍须满足脚手架依赖。
+
+### 在新任务中离线转写
+
+从 Cut Motion 仓库运行，替换新任务 ID 和实际源文件后缀：
+
+```bash
+ASR_ROOT="/Users/maxwellbrooks/Workspace/cut-motion/jobs/07-dont-study-too-long"
+ASR_MODEL="$ASR_ROOT/.cache/huggingface/hub/models--mlx-community--whisper-large-v3-mlx/snapshots/49e6aa286ad60c14352c404340ded53710378a11"
+ASR_JOB="/Users/maxwellbrooks/Workspace/cut-motion/jobs/<new-job-id>"
+ASR_INPUT="$ASR_JOB/input/source.mov"
+ASR_OUT="$ASR_JOB/checkpoints/asr-source-run-01"
+
+# 如已存在则换一个新的运行编号；不要覆盖原始转写。
+mkdir "$ASR_OUT" && PATH="/opt/homebrew/bin:$PATH" HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 \
+  "$ASR_ROOT/.venv/bin/mlx_whisper" "$ASR_INPUT" \
+  --model "$ASR_MODEL" \
+  --language zh \
+  --task transcribe \
+  --word-timestamps True \
+  --condition-on-previous-text False \
+  --initial-prompt "这是一段中文口播。请保留原话、重复与未说完的句子。" \
+  --output-name source-asr-raw \
+  --output-format all \
+  --output-dir "$ASR_OUT" \
+  > "$ASR_OUT/transcribe.log" 2>&1
+```
+
+CLI 经 PATH 中的 FFmpeg 读取媒体并转为 16 kHz 单声道，无须重复编写抽音脚本。`all` 生成 JSON、TXT、SRT、VTT、TSV；JSON 的 `segments[].words[]` 含逐词时间。记录输入 SHA-256、命令、包版本、模型快照和输出目录。补录各自建运行目录；原 `jobs/07-dont-study-too-long/transcribe.py` 固定了旧任务和文件名，不能直接作为下一期入口。
+
+此版本 CLI 可能捕获单文件异常、打印 `Skipping` 后仍正常退出。因此成功至少要求新 JSON 存在、`segments` 非空、起止时间有效且落在媒体范围内，并检查日志和异常长重复；退出码不够。静音或低音频可能触发幻觉，需对可疑窗口核对录音、局部重转并记录源时间偏移，保留失败原稿；关闭上下文不是正确率保证，也不能机械复制第 07 期开头的修复偏移。
+
+原始转写保留全部重录候选，不在 ASR 阶段去重。其 JSON 不是 Cut Motion transcript schema，SRT 也不是发布字幕：完成录音核对后，再整理 `state/transcript.json`、`state/transcript-reconciliation.json` 与 `docs/content-analysis.md`。最后一次完整重录的选择发生在语义选段阶段；真实听校范围必须如实记录。
+
 ## Environment preflight
 
-Use the ChatCut tools already exposed in the active Agent session. If they are unavailable, report that immediately; do not probe endpoints, inspect daemon logs, or troubleshoot tokens during a normal job. Then run the local dependency check once:
+Check the existing local ASR runtime above first. Inspect the active Agent session for ChatCut, then run:
 
 ```bash
 ./scripts/check-environment.sh check
 ```
 
-ChatCut is an Agent integration; its setup depends on the client. The official guides currently cover:
+If ChatCut is required for the editable rough-cut stage but unavailable, explain that stage-specific blocker and wait for installation/authentication approval; continue available local transcription and content analysis. After approval:
 
-| Client | Setup guide |
-| --- | --- |
-| ChatGPT desktop app (Work or Codex tab) | [chatcut.io/chatgpt](https://chatcut.io/chatgpt) |
-| Claude Code | [chatcut.io/claude](https://chatcut.io/claude) |
-| WorkBuddy | [chatcut.io/workbuddy](https://chatcut.io/workbuddy) |
-
-If ChatCut is required but unavailable, explain the reason and wait for approval before installing a plugin, changing Agent-wide configuration, or starting authentication. Then ask the active Agent to follow the matching guide:
-
-- ChatGPT desktop Work/Codex: `Read https://chatcut.io/chatgpt to install and use the ChatCut plugin`
+- Codex: `Read https://chatcut.io/chatgpt to install and use the ChatCut plugin`
 - Claude Code: `Read https://chatcut.io/claude to install and use the ChatCut plugin`
-- WorkBuddy: `Read https://chatcut.io/workbuddy and follow its setup to connect ChatCut`
 
-Start a new Agent session after setup because integrations may load only when a session starts, then confirm ChatCut tools are available before continuing. The ChatGPT guide covers the desktop app's Work and Codex tabs; do not assume it also covers the ChatGPT website or remote workspaces.
-
-### WorkBuddy token renewal
-
-The current [ChatCut WorkBuddy guide](https://chatcut.io/workbuddy) configures a static bearer token that expires after about an hour; do not assume WorkBuddy's native OAuth refresh manager applies to this manual MCP entry. If ChatCut returns `401`, give the user the guide's [Verify refresh flow](https://chatcut.io/workbuddy#verify) and have them complete it in their own local terminal, outside the Agent's terminal or logging path. Do not run or capture its token-exchange command, or ask the user to paste its command or response into chat: the documented command places the refresh token in a process argument and prints a response containing tokens. The user should replace only `mcpServers.chatcut.headers.Authorization` in `~/.workbuddy/mcp.json` and keep any rotated refresh token private. Retry in the current conversation; token expiry alone does not require a new conversation. If the updated header is not picked up, use the documented WorkBuddy reload path (restart WorkBuddy or start a new session), then confirm the MCP server status. Keep both tokens out of chat, logs, and Git.
+Do not add or run a deterministic ChatCut installer.
 
 ## Local requirements
 
@@ -36,7 +88,8 @@ The current [ChatCut WorkBuddy guide](https://chatcut.io/workbuddy) configures a
 - Node.js 22 or newer with npm and npx.
 - FFmpeg and FFprobe with H.264 and AAC support.
 - jq.
-- Optional: [Smiley Sans WOFF2](https://github.com/atelier-anchor/smiley-sans/releases), released under SIL Open Font License 1.1. Missing font media uses the composition's sans-serif fallback and does not block the job.
+- [Smiley Sans WOFF2](https://github.com/atelier-anchor/smiley-sans/releases), released under SIL Open Font License 1.1.
+- Microsoft YaHei available to the local cover renderer for `talking-head-opinion-poster-v2`; if it is absent, pause for a user-selected substitute rather than silently falling back or downloading a font.
 
 ## Job setup
 
@@ -46,66 +99,41 @@ Create the job:
 ./scripts/scaffold-project.sh jobs/<job-id> /absolute/path/to/video.mov review
 ```
 
-Prepare the pinned renderer dependencies when composition is needed. The command first reuses the repository's `node_modules/`; if the exact versions are absent, it installs them there automatically. This project-local install never requires user approval and does not install global packages or change Agent configuration.
+After dependency-install approval:
 
 ```bash
-./scripts/check-environment.sh install-job jobs/<job-id>
-./scripts/install-font.sh jobs/<job-id>
+./scripts/check-environment.sh install-job jobs/<job-id> --yes
+mkdir -p jobs/<job-id>/hyperframes/assets/fonts
+cp /path/to/smiley-sans-oblique.woff2 jobs/<job-id>/hyperframes/assets/fonts/smiley-sans-oblique.woff2
 ```
 
-`install-font.sh` resolves the display font in this order: `--from <file>`, the shared cache under `assets/fonts/` (git-ignored, populated by the first job that has the font), fonts already installed in another job, and finally an explicit `--download` from the upstream release. It copies the font and its license into `hyperframes/<fontAsset>`, repoints `state/design-system.json` at the installed file, and rewrites the `@font-face` in the HyperFrames template so the format match is real rather than assumed. Skip it when no font is available; the composition falls back to sans-serif and the font check is optional.
-
-`install-job` stores pinned HyperFrames, GSAP, and their dependency tree in the Git-ignored root `node_modules/`. It checks that tree first, then adopts a matching job or npm cache before downloading packages. Each job links to the shared tree; its small GSAP browser asset stays in the job. Dependency adoption preserves unrelated root packages. Do not create another checkout or repository cache for production.
-
-## ChatCut preflight
-
-Use ChatCut tools already exposed in the active Agent session. If they are unavailable, report that immediately and stop the normal editing run. Endpoint probing is only for a specific connection diagnosis, never a routine preflight. `check-environment.sh check` verifies local dependencies:
-
-```bash
-./scripts/check-environment.sh chatcut
-```
-
-It distinguishes endpoint/network/authentication failures from a responding server. Its JSON config discovery covers WorkBuddy/CodeBuddy/Cursor-style configs; native desktop integrations may not use those files. Missing config is not proof of a missing plugin. A healthy endpoint does not prove that the active client mounted its tools; check that client's enabled/trusted state.
-
-## Import a local recording into ChatCut
-
-Check for an existing asset first. Use the active integration's import skill and tool contract; hosted plugins and desktop MCP clients can expose different import routes and helper arguments.
-
-- When the hosted plugin supports same-machine editor import, use its bundled local-media helper and `import_media action=from_editor`. Keep the editor open for sync and transcription.
-- Otherwise use the supported desktop import tool or `import_media action=create_session` and its matching upload helper. Follow that helper's arguments; do not transplant `--input`, retry, or transcription-only flags from another client. Keep import tokens out of chat, logs and Git.
-- If the loopback helper returns `listen EPERM` before transferring media, retry that helper only through the host-approved local-network permission path. If the client does not support the loopback bridge, use its documented upload helper; if the host or OS denies the requested operation, stop and ask the user to grant that permission or upload through the editor. Do not change transfer routes to bypass the denial or spend time probing endpoints.
-- Reuse the confirmed helper invocation and its running session for the rest of the job. Summarize tool results with IDs, status, duration, and next offset; save complete structured data directly under the job rather than printing it and parsing truncated terminal output.
-- On a timeout, inspect progress and the existing asset before retrying. A helper still retrying is not a terminal failure; resume the same asset through its supported recovery path instead of starting another upload/transcode.
-- Wait for transcription readiness using the integration's progress/asset tools before Script editing. An upload acknowledgment alone does not establish transcript readiness, and a provisional status alone does not justify re-uploading.
+`install-job` reuses the exact HyperFrames version from npm's `_npx` cache when available. Otherwise it installs the pinned dependency inside the job. It resolves GSAP independently and never requires a global HyperFrames installation.
 
 ## Render commands
 
-After the existing plan-package approval and A-roll media lock, prepare once:
+From `jobs/<job-id>/hyperframes`:
 
 ```bash
-./scripts/check-environment.sh install-job jobs/<job-id>
-node scripts/compose-job.mjs jobs/<job-id>
-```
-
-Follow the composition command's batch snapshot command, inspect the expanded MGs, and recapture only affected groups after a local change. Then render from `jobs/<job-id>/hyperframes`:
-
-```bash
+npm run render:preview
 npm run render
 ```
 
-These scripts use the repository's stable delivery route. `npm run render` is the default single delivery render: ordinary jobs stay monolithic and only longer jobs use chunks with HyperFrames' platform-default browser resolution. Use `npm run render:preview` only for an explicit visual question, not as a mandatory pre-render step. Use `npm run render:chunked` only for a known long-media or normal-route failure case; that explicit route selects the exact cached arm64 HeadlessChrome and hardware Metal. Chunk boundaries are normalized to the manifest frame grid, each rendered chunk is probed and cached with a receipt, and the final video is assembled with the authoritative audio. The preview uses HyperFrames `standard` quality; the final render uses `high` quality with the same composition, resolution, frame rate, timing, and audio.
+The preview uses HyperFrames `standard` quality. The final render uses `high` quality with the same composition, resolution, frame rate, timing, and audio.
 
-Perform [MG final-state self-review](workflow.md#mg-final-state-self-review) in one snapshot batch, then run `npm run render` once. Resume a running render instead of launching another; reuse a completed delivery recorded for the same composition. A bare `final.mp4` filename does not establish that revised inputs are already rendered. `render:revision` aliases the same direct `output/final.mp4` output. If the normal render hits a known failure, follow the matching entry in [Troubleshooting](troubleshooting.md); do not probe alternative renderers or worker settings. Read command summaries and saved data for recovery; routine delivery does not require rereading helper source or dumping full JSON.
+For a local revision, inspect an encoded affected-window preview with surrounding speech, including entry, full visibility and exit. A successful render log or correct HTML is not proof that all images appeared. Reuse an unchanged encoded section only when timing, codec parameters, splice boundary, captions and audio remain compatible; preserve the last delivery until the candidate is checked. A full render remains the simpler fallback when those conditions are not met.
 
-### Optional preview
+## Existing job references for targeted reuse
 
-Use `npm run render:preview` only when a specific visual question needs an early frame. It is not a delivery step.
+These are inspected examples, not portable commands. Reuse the working approach in the current job and adapt its inputs before execution; do not mutate the approved reference job or copy its approval exceptions.
+
+| Need | Existing source under `jobs/07-dont-study-too-long/` | Reuse boundary |
+| --- | --- | --- |
+| Sequential evidence screenshots | `hyperframes/mg/e03-income/{fragment.html,style.css,timeline.mjs}` and `state/beat-map.json` | One builder-owned `motion.reveal` per cue, staged downward reveal and shared exit; recalculate asset sizes, word anchors and readability per job. Six images, eight-frame spacing and 1.95 seconds are reference parameters only. |
+| Partial delivery revision | `scripts/render-revision-3.py` | Example of native alpha composition, compatible prefix/tail joining and original-audio remux. It hard-codes the old log, paths and frame counts; do not run it unchanged in a new job. Prefer the existing renderer unless reuse is demonstrably safe. |
+| Candidate verification | `scripts/verify-corrected-delivery.py` | Reuse media/audio/splice checks and encoded-frame inspection, but replace job-specific dimensions, duration, sample locations and frame counts. It does not prove listening or aesthetic approval. |
+| Five-platform workbook | `scripts/build-title-package.mjs` | Reuse the two-sheet workbook/formula layout with the active Spreadsheets skill and bundled runtime; rewrite all candidates for current content and adapt fixed topic/frame assertions. Preserve user selection and publication data. Run repository `scripts/check-titles.mjs` against the current video hash. |
 
 ## Repository verification
-
-Keep user media, transcripts, job state, and credentials under ignored local paths, normally `jobs/`. Media is ignored by default. Tracking public reference media requires user approval and an explicit ignore exception. Never force-add private files. Ignoring a file does not remove it from Git's index or history.
-
-Before committing, run `node scripts/check-repository-privacy.mjs --staged` against the actual index. Static verification also checks working-tree candidates for common credential patterns without printing secret values. This lightweight check cannot recognize every personal document or arbitrary key: inspect the staged diff as well. It is repository maintenance, not a video-production gate.
 
 ```bash
 ./scripts/verify-repository.sh --static
@@ -114,6 +142,14 @@ CUT_MOTION_FONT=/absolute/path/to/smiley-sans-oblique.woff2 ./scripts/verify-rep
 
 Static verification is the CI-safe default. Runtime verification resolves the job-local HyperFrames runtime and executes real CLI, browser, and media checks.
 
-## GitHub pull requests
+## Integrated maintenance and new planning
 
-Before opening a PR, verify the active `gh` account with `gh auth status` and `gh api user --jq .login`. SSH push identity does not determine the PR author. If `gh` needs authentication, follow the approval rule in `AGENTS.md`, then use `gh auth login --web --skip-ssh-key` in an interactive terminal. Do not pipe guessed input into an OAuth prompt; if the current Agent has no TTY, ask the user to run that command in their local interactive terminal, then verify the active account again. After creating the PR, confirm the author with `gh pr view <number> --json author --jq .author.login`.
+The maintained fork is `lvzaixian/cut-motion`. `origin` identifies upstream; `personal` identifies the user fork. The pre-update branch is `local-workflow/pre-upstream-20261006`, preserving `db84840`; integration uses fixed upstream `41baefb`. Inspect Git state before future updates; never pull over local edits or bulk-regenerate old jobs. See [the integration guide](upstream-integration.md).
+
+This host's shared font/npm cache is `/Users/maxwellbrooks/Workspace/口播/.cut-motion/`. Exact installed runtimes and old-job fonts may be read for reuse; never move or rewrite them. Modules and links remain inside the new job. `CUT_MOTION_FONT_CACHE` and `CUT_MOTION_NPM_CACHE` support other hosts. No project `node_modules`, state or preview belongs in the delivery cache. Reuse needs no approval; downloads follow the existing scoped consent rule.
+
+`install-font.sh <job>` copies a licensed local font; use `--download` only after consent. A missing confirmed font blocks production rather than selecting sans-serif. Endpoint diagnosis is reserved for actual connection errors; a healthy probe does not establish that the active ChatCut tools can edit a project.
+
+New planning and measured timing are routed from [Workflow](workflow.md#unified-planning-for-new-jobs). Compose respects visual approval and media lock. `render:revision` writes `final.candidate.mp4`, which still needs title validation and promotion.
+
+Before publishing code, inspect the staged diff and run `node scripts/check-repository-privacy.mjs --staged`. Jobs, transcripts, credentials, runtime packages and font binaries remain ignored. This common-pattern check is repository maintenance and adds no video approval.

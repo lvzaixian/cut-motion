@@ -1,0 +1,16 @@
+{
+  "$schema": "../../../schemas/roughcut-selection.schema.json",
+  "schemaVersion": "1.0.0",
+  "policy": "reference-aligned-last-complete-take-v1",
+  "sourceTranscriptSha256": null,
+  "transcriptReconciliationSha256": null,
+  "referenceScriptSha256": null,
+  "chatcutRoughCutSha256": null,
+  "verifiedAt": null,
+  "chatcut": {
+    "projectId": null,
+    "activeTimelineId": null
+  },
+  "selections": [],
+  "discards": []
+}

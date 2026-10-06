@@ -25,7 +25,12 @@ const outputs = new Map();
 const targets = beatMap.beats.filter((beat) => beat.mgScope === "local" && (!onlyBeat || beat.id === onlyBeat));
 if (onlyBeat && !targets.length) throw new Error(`No local MG beat ${onlyBeat}`);
 for (const beat of targets) {
-  if (!/^[\w-]+$/.test(beat.id)) throw new Error(`Unsafe BeatID ${beat.id}`);
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(beat.id)) throw new Error(`Unsafe BeatID ${beat.id}`);
+  // Historic recipes are editorial references, not template selections.
+  if (beat.templateId === undefined && ["fragment.html", "style.css", "timeline.mjs"].every(file => fs.existsSync(path.join(jobRoot, "hyperframes/mg", beat.id, file)))) {
+    console.log(`${beat.id}: existing authored module retained`);
+    continue;
+  }
   const { component } = componentFor(beat);
   if (!component) {
     for (const file of ["fragment.html", "style.css", "timeline.mjs"]) if (!fs.existsSync(path.join(jobRoot, "hyperframes/mg", beat.id, file))) throw new Error(`${beat.id}: custom module is missing ${file}`);
@@ -33,11 +38,19 @@ for (const beat of targets) {
     continue;
   }
   if (component.meta.name === "stage/axis-stage-transition") continue;
-  if (component.meta.name === "evidence-focus" && !fs.existsSync(path.join(jobRoot, "hyperframes", beat.templateData?.image ?? "missing-evidence"))) throw new Error(`${beat.id}: evidence image is missing from hyperframes/assets`);
+  let data = beat.templateData ?? {};
+  if (component.meta.name === "evidence-focus") {
+    if (beat.motionProfile === "thoughtful-editorial-v1") {
+      const material = beatMap.materials?.find(material => material.id === beat.materialRefs?.[0]?.materialId);
+      if (!material?.path?.startsWith("input/") || material.path.split("/").includes("..")) throw new Error(`${beat.id}: evidence image must name a registered input material`);
+      data = { ...data, image: `../${material.path}` };
+    }
+    if (!fs.existsSync(path.join(jobRoot, "hyperframes", data.image ?? "missing-evidence"))) throw new Error(`${beat.id}: evidence image is missing`);
+  }
   const window = resolveBeatRenderWindow(beat, beatMap, words);
   const revealTimes = resolveRevealTimes(beat, window, speechTiming);
-  const source = component.render({ beat: { ...beat, start: window.start, end: window.end,
-    templateData: { ...beat.templateData, ...(revealTimes ? { revealTimes } : {}) } } });
+  const source = component.render({ beat: { ...beat, fps: beatMap.fps, start: window.start, end: window.end,
+    templateData: { ...data, ...(revealTimes ? { revealTimes } : {}) } } });
   new Function("root", "select", "beat", "timeline", source.timeline);
   if (/<(?:script|style|video|audio)\b/i.test(source.fragment)) throw new Error(`${beat.id}: forbidden shared element`);
   for (const [file, content] of Object.entries({ "fragment.html": source.fragment, "style.css": source.style, "timeline.mjs": source.timeline })) outputs.set(`hyperframes/mg/${beat.id}/${file}`, content);
@@ -46,7 +59,7 @@ for (const beat of targets) {
 // A/B transitions operate on the existing speaker and shared timeline, never a second video.
 const hostPath = path.join(jobRoot, "hyperframes/index.template.html");
 const hasStageBlock = fs.existsSync(hostPath) && fs.readFileSync(hostPath, "utf8").includes("/* CUT_MOTION_STAGE_CSS_START */");
-if (targets.some((beat) => componentFor(beat).component?.meta.name === "stage/axis-stage-transition") || (!onlyBeat && hasStageBlock)) {
+if (targets.some(beat => ["stage/axis-stage-transition", "axis-stage-transition"].includes(beat.templateId ?? beat.recipe)) || (!onlyBeat && hasStageBlock)) {
   const stages = beatMap.beats.filter((beat) => ["stage/axis-stage-transition", "axis-stage-transition"].includes(beat.templateId ?? beat.mgComponent ?? beat.recipe));
   const intervals = stages.map((beat) => {
     const { start, end } = resolveBeatRenderWindow(beat, beatMap, words);

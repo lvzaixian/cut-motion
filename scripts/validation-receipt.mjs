@@ -17,7 +17,10 @@ const srcsetPattern = /\bsrcset\s*=\s*["']([^"']+)["']/gi;
 const imageSetPattern = /\bimage-set\(([^)]*)\)/gi;
 const cssImportPattern = /@import\s+["']([^"']+)["']/gi;
 const importPattern = /(?:from\s*|import\s*)["'](\.[^"']+)["']/g;
-const dynamicAssetPattern = /\b(?:fetch|import)\s*\(|\bnew\s+URL\s*\(|\.(?:src|srcset|poster)\s*=|\bsetAttribute\s*\(\s*["'](?:src|srcset|poster)["']|\bbackgroundImage\s*=|url\(\s*var\(/;
+const dynamicAssignmentOperator = String.raw`(?:=(?!=|>)|(?:\*\*|>>>|<<|>>|&&|\|\||\?\?|[+\-*/%&|^])=)`;
+const dynamicAssetProperty = String.raw`(?:\.(?:src|srcset|poster)|\[\s*["'](?:src|srcset|poster)["']\s*\]|\bbackgroundImage\b|\[\s*["']backgroundImage["']\s*\])`;
+const assignmentTrivia = String.raw`(?:\s|/\*[\s\S]*?\*/)*`;
+const dynamicAssetPattern = new RegExp(String.raw`\b(?:fetch|import)\s*\(|\bnew\s+URL\s*\(|${dynamicAssetProperty}${assignmentTrivia}${dynamicAssignmentOperator}|\bsetAttribute\s*\(\s*["'](?:src|srcset|poster)["']|url\(\s*var\(`);
 
 const normalizeRelativePath = (value) => path.posix.normalize(String(value).replaceAll("\\", "/")).replace(/^\.\//, "");
 const stableJson = (value) => {

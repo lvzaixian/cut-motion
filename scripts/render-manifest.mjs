@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import {
   assertCaptionSequence,
   captionFrameWindow,
+  durationToFrames,
   frameWindowsOverlap,
   quantizeFrameWindow
 } from "./frame-window-utils.mjs";
@@ -35,6 +36,7 @@ const workflowUtilsPath = fileURLToPath(new URL("./workflow-utils.mjs", import.m
 const motionWindowUtilsPath = fileURLToPath(new URL("./motion-window-utils.mjs", import.meta.url));
 const mgSpeechTimingPath = fileURLToPath(new URL("./mg-speech-timing.mjs", import.meta.url));
 const frameWindowUtilsPath = fileURLToPath(new URL("./frame-window-utils.mjs", import.meta.url));
+const visualOrchestrationVersionPath = fileURLToPath(new URL("./visual-orchestration-version.mjs", import.meta.url));
 const beatMapSchemaPath = fileURLToPath(new URL("../schemas/beat-map.schema.json", import.meta.url));
 const boundaryIsSafe = (frame, intervals) => !intervals.some((interval) => interval.startFrame < frame && frame < interval.endFrame);
 const uniqueSorted = (values) => [...new Set(values)].sort((left, right) => left - right);
@@ -117,7 +119,10 @@ const assetEntry = (jobRoot, sourceDirectory, value) => {
   return { path: relative(jobRoot, absolutePath), sha256: sha256File(realPath) };
 };
 
-const dynamicAssetPattern = /\b(?:fetch|import)\s*\(|\bnew\s+URL\s*\(|\.(?:src|srcset|poster)\s*=|\bsetAttribute\s*\(\s*["'](?:src|srcset|poster)["']|\bbackgroundImage\s*=|url\(\s*var\(/;
+const dynamicAssignmentOperator = String.raw`(?:=(?!=|>)|(?:\*\*|>>>|<<|>>|&&|\|\||\?\?|[+\-*/%&|^])=)`;
+const dynamicAssetProperty = String.raw`(?:\.(?:src|srcset|poster)|\[\s*["'](?:src|srcset|poster)["']\s*\]|\bbackgroundImage\b|\[\s*["']backgroundImage["']\s*\])`;
+const assignmentTrivia = String.raw`(?:\s|/\*[\s\S]*?\*/)*`;
+const dynamicAssetPattern = new RegExp(String.raw`\b(?:fetch|import)\s*\(|\bnew\s+URL\s*\(|${dynamicAssetProperty}${assignmentTrivia}${dynamicAssignmentOperator}|\bsetAttribute\s*\(\s*["'](?:src|srcset|poster)["']|url\(\s*var\(`);
 const assertNoDynamicAssets = (source, sourcePath) => {
   if (dynamicAssetPattern.test(source)) {
     throw new Error(`Dynamic media references are unsupported in render sources: ${relative(path.dirname(path.dirname(sourcePath)), sourcePath)}`);
@@ -188,7 +193,7 @@ export const deriveRenderInputs = (jobRootInput) => {
   const fps = Number(beatMap.fps);
   const duration = Number(beatMap.duration);
   if (!(fps > 0 && duration > 0)) throw new Error("Render Manifest requires positive fps and duration");
-  const totalFrames = Math.ceil(duration * fps);
+  const totalFrames = durationToFrames(duration, fps);
 
   const sharedSourcePaths = [templatePath, captionCssPath].filter((candidate) => fs.existsSync(candidate));
   const templateSource = fs.readFileSync(templatePath, "utf8");
@@ -205,6 +210,7 @@ export const deriveRenderInputs = (jobRootInput) => {
     mgSpeechTimingPath,
     ...(beatMap.beats.some(beat => beat.templateData?.revealCues) ? [path.join(jobRoot, "state/mg-speech-timing.json")] : []),
     frameWindowUtilsPath,
+    visualOrchestrationVersionPath,
     beatMapSchemaPath,
     packagePath,
     ...sharedAssets.map((entry) => path.join(jobRoot, entry.path))
@@ -408,6 +414,7 @@ export const deriveRenderManifest = (jobRootInput, options = {}) => {
   const designLanguageFingerprint = options.designLanguageFingerprint
     ?? computeDesignLanguageFingerprint(jobRoot, workflow.captionMode);
   const runtime = resolveLockedHyperframesCli(jobRoot);
+  if (!runtime.environment) throw new Error("Renderer environment identity is unavailable");
   const shared = {
     authoritativeMediaSha256: workflow.authoritativeMediaSha256,
     designLanguageFingerprint,
@@ -449,6 +456,7 @@ export const deriveRenderManifest = (jobRootInput, options = {}) => {
     totalFrames: inputs.totalFrames,
     duration: inputs.totalFrames / inputs.fps,
     audio: { sourcePath: workflow.authoritativeMediaPath, sourceSha256: workflow.authoritativeMediaSha256 },
+    renderer: { fingerprint: runtime.fingerprint, environment: runtime.environment },
     designLanguageFingerprint,
     sharedDependencySha256: inputs.sharedDependencySha256,
     beats: inputs.beats,

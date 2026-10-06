@@ -11,15 +11,23 @@ export function unwrapChatcut(value) {
   if (Array.isArray(content)) {
     const blocks = content.filter(block => block.type === "text").map(block => unwrapChatcut(block.text));
     const structured = structuredContent == null ? {} : unwrapChatcut(structuredContent);
+    const pageArray = Array.isArray(structured) ? structured : blocks.find(Array.isArray);
+    if (pageArray) return pageArray.map(page => ({ ...metadata, ...page }));
     return { ...metadata, ...Object.assign({}, ...blocks), ...structured,
       text: structured?.text || blocks.map(block => block?.text ?? "").filter(Boolean).join("\n") || metadata.text || "" };
   }
-  if (structuredContent != null) return { ...metadata, ...unwrapChatcut(structuredContent) };
+  if (structuredContent != null) {
+    const unwrapped = unwrapChatcut(structuredContent);
+    return Array.isArray(unwrapped) ? unwrapped.map(page => ({ ...metadata, ...page })) : { ...metadata, ...unwrapped };
+  }
   if (value.text && typeof value.text === "object") return { ...metadata, ...unwrapChatcut(value.text) };
   if (typeof value.text === "string") {
     try {
       const parsed = JSON.parse(value.text);
-      if (parsed && typeof parsed === "object") return { ...metadata, ...unwrapChatcut(parsed) };
+      if (parsed && typeof parsed === "object") {
+        const unwrapped = unwrapChatcut(parsed);
+        return Array.isArray(unwrapped) ? unwrapped.map(page => ({ ...metadata, ...page })) : { ...metadata, ...unwrapped };
+      }
     } catch { /* Ordinary word-bearing text is already unwrapped. */ }
   }
   return value;

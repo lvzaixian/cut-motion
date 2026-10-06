@@ -66,8 +66,8 @@ cp "$repository_root/scripts/check-environment.sh" "$cache_repository/scripts/ch
 cp "$repository_root/scripts/workflow-utils.mjs" "$cache_repository/scripts/workflow-utils.mjs"
 cp "$repository_root/templates/hyperframes/package.json" "$dependency_job/hyperframes/package.json"
 npm_config_cache="$cache" bash "$cache_repository/scripts/check-environment.sh" install-job "$dependency_job" --yes >/dev/null
-[[ -L "$dependency_job/hyperframes/node_modules" && -d "$cache_repository/node_modules" && ! -e "$cache_repository/.cache" ]] || {
-  echo "Pinned dependencies did not use the standard root node_modules" >&2
+[[ -d "$dependency_job/hyperframes/node_modules" && ! -L "$dependency_job/hyperframes/node_modules" && ! -e "$cache_repository/node_modules" && ! -e "$cache_repository/.cache" ]] || {
+  echo "Pinned dependencies must stay inside the selected job" >&2
   exit 1
 }
 [[ -L "$dependency_job/hyperframes/node_modules/hyperframes" ]] || {
@@ -110,8 +110,8 @@ npm_config_cache="$cache" bash "$reuse_repository/scripts/check-environment.sh" 
   echo "Dependency adoption removed unrelated root packages or commands" >&2
   exit 1
 }
-[[ ! -e "$reuse_repository/.cache" && "$(readlink "$reuse_job/hyperframes/node_modules")" == "$reuse_repository/node_modules" ]] || {
-  echo "Reusable dependencies were not attached from the standard root node_modules" >&2
+[[ ! -e "$reuse_repository/.cache" && -d "$reuse_job/hyperframes/node_modules" && ! -L "$reuse_job/hyperframes/node_modules" ]] || {
+  echo "Reusable dependencies were not copied into the selected job" >&2
   exit 1
 }
 [[ ! -L "$reuse_job/hyperframes/node_modules/hyperframes" ]] || {
@@ -134,6 +134,7 @@ grep -Fq 'reused gsap fixture' "$reuse_job/hyperframes/assets/gsap.min.js" || {
   echo "GSAP browser runtime was not refreshed from the exact reusable package" >&2
   exit 1
 }
+[[ -f "$reuse_source/hyperframes/node_modules/transitive/package.json" && ! -L "$reuse_source/hyperframes/node_modules" ]] || { echo "Reuse mutated the source job" >&2; exit 1; }
 rm -rf "$reuse_source"
 "$reuse_job/hyperframes/node_modules/.bin/hyperframes" >/dev/null
 rm -rf "$reuse_job"

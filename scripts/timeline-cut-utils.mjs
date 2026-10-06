@@ -38,6 +38,12 @@ export const retimeDocument = (document, cut) => {
     result.duration -= cut.removedSeconds;
   }
   const removedIds = [];
+  const invalidatedArtifacts = [
+    "state/chatcut-main-timeline.json", "state/timeline-source-windows.json", "state/transcript.json",
+    "state/mg-speech-timing.json", "state/planning-inputs.json", "state/planning-generated.json",
+    "captions/caption-review-plan.json", "captions/captions.json", "state/creative-confirmation.json",
+    "state/workflow.json", "state/render-manifest.json", "state/titles.json"
+  ];
   if (Array.isArray(result.cues)) {
     assertCaptionSequence(result.cues);
     result.cues = result.cues.filter((cue) => {
@@ -59,11 +65,34 @@ export const retimeDocument = (document, cut) => {
       }
       return time;
     };
+    const shiftWindow = (item, startField, endField, frames, id, expectedSide = null) => {
+      if (!frames) { item[startField] = atBoundary(item[startField]); item[endField] = atBoundary(item[endField]); }
+      if (frames && (!Number.isSafeInteger(item[startField]) || !Number.isSafeInteger(item[endField]))) {
+        throw new Error(`${id}: timeline frames must be integers`);
+      }
+      const side = placement(item[startField], item[endField], frames ? cut.startFrame : cut.start,
+        frames ? cut.endFrame : cut.end, id);
+      if (expectedSide && side !== expectedSide) throw new Error(`${id}: window crosses its Beat or a cut boundary; re-align the Beat`);
+      if (side === "after") {
+        item[startField] -= frames ? cut.removedFrames : cut.removedSeconds;
+        item[endField] -= frames ? cut.removedFrames : cut.removedSeconds;
+      }
+      return side;
+    };
     result.beats = result.beats.filter((beat) => {
       beat.start = atBoundary(beat.start);
       beat.end = atBoundary(beat.end);
       const side = placement(beat.start, beat.end, cut.start, cut.end, beat.id);
-      if (side === "removed") { removedIds.push(beat.id); return false; }
+      if (side === "removed") {
+        for (const cue of beat.objectCues ?? []) {
+          shiftWindow(cue, "preMotionFrame", "invisibleFrame", true, `${beat.id}.${cue.id}`, side);
+        }
+        for (const reference of beat.materialRefs ?? []) {
+          shiftWindow(reference, "displayStartFrame", "displayEndFrame", true, `${beat.id}.${reference.materialId}`, side);
+        }
+        removedIds.push(beat.id);
+        return false;
+      }
       const shiftTime = (time) => {
         if (!Number.isFinite(time) || time < 0) throw new Error(`${beat.id}: invalid event time`);
         time = atBoundary(time);
@@ -74,14 +103,44 @@ export const retimeDocument = (document, cut) => {
         return side === "after" ? time - cut.removedSeconds : time;
       };
       if (beat.audioAnchorTime !== undefined) beat.audioAnchorTime = shiftTime(beat.audioAnchorTime);
+      for (const field of ["entryAnchorTime", "exitAnchorTime", "exitStartTime"]) {
+        if (beat[field] !== undefined) beat[field] = shiftTime(beat[field]);
+      }
       for (const event of beat.microEvents ?? []) event.time = shiftTime(event.time);
+      for (const cue of beat.objectCues ?? []) {
+        const label = `${beat.id}.${cue.id}`;
+        if (Object.keys(cue).some(key => /Frame$/.test(key)
+          && !["preMotionFrame", "firstLegibleFrame", "settledFrame", "invisibleFrame"].includes(key))) {
+          throw new Error(`${label}: unknown absolute frame field requires explicit re-alignment`);
+        }
+        const first = cue.firstLegibleFrame, settled = cue.settledFrame;
+        if (![cue.preMotionFrame, first, settled, cue.invisibleFrame].every(Number.isSafeInteger)
+          || !(cue.preMotionFrame <= first && first <= settled && settled <= cue.invisibleFrame)) {
+          throw new Error(`${label}: invalid ordered object cue frames`);
+        }
+        shiftWindow(cue, "preMotionFrame", "invisibleFrame", true, label, side);
+        if (side === "after") { cue.firstLegibleFrame -= cut.removedFrames; cue.settledFrame -= cut.removedFrames; }
+      }
+      for (const reference of beat.materialRefs ?? []) {
+        shiftWindow(reference, "displayStartFrame", "displayEndFrame", true, `${beat.id}.${reference.materialId}`, side);
+      }
       if (side === "after") { beat.start -= cut.removedSeconds; beat.end -= cut.removedSeconds; }
       // Beat schemas use seconds. Reject mixed representations instead of leaving stale frame fields.
       if (beat.startFrame !== undefined || beat.endFrame !== undefined) throw new Error(`${beat.id}: mixed Beat frame/second fields are unsupported`);
       return true;
     });
+    for (const field of ["intentionalGaps", "mgCadenceExceptions"]) {
+      if (Array.isArray(result[field])) result[field] = result[field].filter((window, index) => {
+        const side = shiftWindow(window, "start", "end", false, `${field}[${index}]`);
+        if (Array.isArray(window.coveredNoneBeatIds)) {
+          window.coveredNoneBeatIds = window.coveredNoneBeatIds.filter(id => !removedIds.includes(id));
+          if (window.coveredNoneBeatIds.length === 0) return false;
+        }
+        return side !== "removed";
+      });
+    }
   } else {
     throw new Error("Only released captions (cues) and Beat Maps (beats) are supported; transcript words and media require their own re-alignment");
   }
-  return { document: result, removedIds, cut };
+  return { document: result, removedIds, cut, invalidatedArtifacts };
 };

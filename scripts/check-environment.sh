@@ -9,14 +9,14 @@ usage() {
 Usage:
   scripts/check-environment.sh check
   scripts/check-environment.sh chatcut [probe arguments]
-  scripts/check-environment.sh install-job <job-directory>
+  scripts/check-environment.sh install-job <job-directory> [--yes]
 
 check verifies local cut-motion runtime dependencies. Use ChatCut tools already
 loaded in the active Agent session; if unavailable, report it and stop. Run the
 endpoint probe only to diagnose a specific connection failure.
 
-install-job checks the repository's ignored node_modules first. If no exact
-version is available locally, it installs the pinned packages there.
+install-job reuses complete exact-version packages locally. New downloads need
+--yes and install only into the selected job; other jobs and caches stay intact.
 It never installs global packages, Agent plugins, fonts, or system dependencies.
 EOF
 }
@@ -71,7 +71,7 @@ check_environment() {
     missing_count=$((missing_count + 1))
   fi
 
-  printf '%s\n' 'optional Licensed WOFF2 font — add it to a job when available; otherwise composition uses sans-serif'
+  printf '%s\n' 'manual   Licensed display font — required in each job before composition; missing media blocks rendering'
 
   printf '%s\n' 'manual  ChatCut — use currently loaded Agent tools; report immediately if unavailable'
 
@@ -80,319 +80,178 @@ check_environment() {
     return 1
   fi
 
-  printf '\nLocal dependencies passed; a local display font is optional.\n'
+  printf '\nLocal dependencies passed. Verify the required display font before rendering.\n'
 }
 
 install_job() {
-  local job_directory="${1:-}"
-  local hyperframes_directory node_modules_directory npm_cache
-  local cache_directory cache_node_modules staging
-  local required_hyperframes_version required_gsap_version cached_hyperframes cached_gsap
-
-  [[ -n "$job_directory" && ( $# -eq 1 || ( $# -eq 2 && "${2:-}" == "--yes" ) ) ]] || { usage >&2; exit 64; }
-  hyperframes_directory="$job_directory/hyperframes"
-  node_modules_directory="$hyperframes_directory/node_modules"
+  local job_directory="${1:-}" approval="${2:-}"
+  [[ -n "$job_directory" && ( $# -eq 1 || ( $# -eq 2 && "$approval" == "--yes" ) ) ]] || { usage >&2; exit 64; }
+  job_directory="$(cd "$job_directory" && pwd -P)"
+  local hyperframes_directory="$job_directory/hyperframes"
+  local node_modules_directory="$hyperframes_directory/node_modules"
+  [[ ! -L "$hyperframes_directory" ]] || { echo "HyperFrames directory must belong to this job" >&2; exit 66; }
+  local required_hyperframes_version required_gsap_version npm_cache download_cache candidate staging
   [[ -f "$hyperframes_directory/package.json" ]] || { echo "Missing generated HyperFrames package: $hyperframes_directory/package.json" >&2; exit 66; }
-  command -v npm >/dev/null 2>&1 || { echo "npm is required to prepare the shared dependency cache" >&2; exit 69; }
+  for tool in node npm; do command -v "$tool" >/dev/null 2>&1 || { echo "$tool is required for job dependencies" >&2; exit 69; }; done
   read -r required_hyperframes_version required_gsap_version < <(
-    node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1])); console.log(p.devDependencies.hyperframes,p.devDependencies.gsap)' "$hyperframes_directory/package.json"
+    node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1])); console.log((p.devDependencies??p.dependencies).hyperframes,(p.devDependencies??p.dependencies).gsap)' "$hyperframes_directory/package.json"
   )
+  [[ "$required_hyperframes_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ && "$required_gsap_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]] || {
+    echo "Job dependencies must declare exact HyperFrames and GSAP versions" >&2; exit 66;
+  }
+  # A directory symlink would let CLI repairs mutate another job or shared cache.
+  [[ ! -L "$node_modules_directory" && ! -L "$node_modules_directory/.bin" ]] || { echo "Job node_modules must be a job-owned directory; preserve and detach its shared link first" >&2; exit 66; }
   npm_cache="$(npm config get cache)"
-  cache_directory="$repository_root"
-  cache_node_modules="$cache_directory/node_modules"
+  download_cache="${CUT_MOTION_NPM_CACHE:-$npm_cache}"
+  if [[ -z "${CUT_MOTION_NPM_CACHE:-}" && -d "$repository_root/../口播/.cut-motion" ]]; then
+    download_cache="$repository_root/../口播/.cut-motion/npm-cache"
+  fi
 
-  module_version() {
-    [[ -f "$1/package.json" ]] && node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1])).version)' "$1/package.json"
-  }
-
-  find_npx_module() {
-    local package_json module_directory
-    for package_json in "$npm_cache"/_npx/*/node_modules/"$1"/package.json; do
-      [[ -f "$package_json" ]] || continue
-      module_directory="${package_json%/package.json}"
-      [[ "$(module_version "$module_directory" 2>/dev/null || true)" == "$2" ]] || continue
-      if [[ "$1" == "hyperframes" ]] && ! module_cli_valid "$module_directory" >/dev/null 2>&1; then
-        continue
-      fi
-      if [[ "$1" == "gsap" && ! -f "$module_directory/dist/gsap.min.js" ]]; then
-        continue
-      fi
-      (cd "$module_directory" && pwd -P)
-      return
-    done
-    return 1
-  }
-
-  module_cli_valid() {
-    node -e '
-      const fs = require("fs");
-      const path = require("path");
-      const moduleDirectory = process.argv[1];
-      const packageJson = JSON.parse(fs.readFileSync(path.join(moduleDirectory, "package.json"), "utf8"));
-      const binary = typeof packageJson.bin === "string" ? packageJson.bin : packageJson.bin?.hyperframes;
-      if (typeof binary !== "string" || !binary) process.exit(1);
-      const binaryPath = path.resolve(moduleDirectory, binary);
-      if (!fs.existsSync(binaryPath)) process.exit(1);
-      const binaryStat = fs.statSync(binaryPath);
-      if (!binaryStat.isFile() || (binaryStat.mode & 0o111) === 0) process.exit(1);
-    ' "$1"
-  }
-
-  find_job_node_modules() {
-    local candidate source_job candidate_real current_job_real
-    current_job_real="$(cd "$job_directory" && pwd -P)"
-    for candidate in "$repository_root"/jobs/*/hyperframes/node_modules; do
-      [[ -d "$candidate" && ! -L "$candidate" ]] || continue
-      source_job="${candidate%/hyperframes/node_modules}"
-      candidate_real="$(cd "$source_job" && pwd -P)"
-      [[ "$candidate_real" != "$current_job_real" ]] || continue
-      [[ "$(module_version "$candidate/hyperframes" 2>/dev/null || true)" == "$required_hyperframes_version" ]] || continue
-      [[ "$(module_version "$candidate/gsap" 2>/dev/null || true)" == "$required_gsap_version" ]] || continue
-      module_cli_valid "$candidate/hyperframes" >/dev/null 2>&1 || continue
-      [[ -f "$candidate/gsap/dist/gsap.min.js" ]] || continue
-      printf '%s\n' "$candidate"
-      return
-    done
-    return 1
-  }
-
-  find_job_module() {
-    local package_name="$1"
-    local required_version="$2"
-    local candidate source_job candidate_real current_job_real
-    current_job_real="$(cd "$job_directory" && pwd -P)"
-    for candidate in "$repository_root"/jobs/*/hyperframes/node_modules/"$package_name"; do
-      [[ -d "$candidate" ]] || continue
-      source_job="${candidate%/hyperframes/node_modules/$package_name}"
-      candidate_real="$(cd "$source_job" && pwd -P)"
-      [[ "$candidate_real" != "$current_job_real" ]] || continue
-      [[ "$(module_version "$candidate" 2>/dev/null || true)" == "$required_version" ]] || continue
-      if [[ "$package_name" == "gsap" && ! -f "$candidate/dist/gsap.min.js" ]]; then
-        continue
-      fi
-      printf '%s\n' "$candidate"
-      return
-    done
-    return 1
-  }
-
-  copy_tree() {
-    local source_directory="$1"
-    local target_directory="$2"
-    if [[ "$target_directory" == "$cache_node_modules" ]]; then
-      local prepared
-      prepared="$(mktemp -d "$hyperframes_directory/.dependency-reuse.XXXXXX")"
-      if cp -R -L "$source_directory/." "$prepared/"; then
-        publish_dependencies "$prepared"
-        remove_path "$prepared"
-        return
-      fi
-      remove_path "$prepared"
-      return 1
-    fi
-    local staging_directory="${target_directory}.${process_id}.reuse"
-    [[ -d "$source_directory" ]] || return 1
-    rm -rf "$staging_directory"
-    mkdir -p "$staging_directory"
-    if ! cp -R -L "$source_directory/." "$staging_directory/"; then
-      rm -rf "$staging_directory"
-      return 1
-    fi
-    rm -rf "$target_directory"
-    mv "$staging_directory" "$target_directory"
-  }
-
-  process_id="$$"
-
-  publish_dependencies() {
-    # Replace prepared package entries, preserving unrelated root dependencies.
-    node - "$1" "$cache_node_modules" <<'NODE'
-const fs = require("node:fs");
-const path = require("node:path");
-const [source, target] = process.argv.slice(2);
-fs.mkdirSync(target, { recursive: true });
-const sameEntry = (from, to) => fs.existsSync(from) && fs.existsSync(to) && fs.realpathSync(from) === fs.realpathSync(to);
-for (const entry of fs.readdirSync(source)) {
-  const prepared = path.join(source, entry);
-  const destination = path.join(target, entry);
-  if (sameEntry(prepared, destination)) continue;
-  if (entry === ".bin" || entry.startsWith("@")) {
-    fs.mkdirSync(destination, { recursive: true });
-    for (const child of fs.readdirSync(path.join(source, entry))) {
-      const childTarget = path.join(destination, child);
-      if (sameEntry(path.join(source, entry, child), childTarget)) continue;
-      fs.rmSync(childTarget, { recursive: true, force: true });
-      fs.renameSync(path.join(source, entry, child), childTarget);
-    }
+  module_valid() {
+    node - "$1" "$2" "$3" <<'NODE'
+const fs = require("node:fs"), path = require("node:path");
+const [directory, name, version] = process.argv.slice(2);
+try {
+  const manifest = JSON.parse(fs.readFileSync(path.join(directory, "package.json")));
+  if (manifest.version !== version) process.exit(1);
+  if (name === "gsap") {
+    if (!fs.statSync(path.join(directory, "dist/gsap.min.js")).isFile()) process.exit(1);
   } else {
-    fs.rmSync(destination, { recursive: true, force: true });
-    fs.renameSync(path.join(source, entry), destination);
+    const binary = typeof manifest.bin === "string" ? manifest.bin : manifest.bin?.hyperframes;
+    if (!binary) process.exit(1);
+    const resolved = path.resolve(directory, binary), relative = path.relative(directory, resolved);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) process.exit(1);
+    const stat = fs.statSync(resolved);
+    if (!stat.isFile() || !(stat.mode & 0o111)) process.exit(1);
+    // Check declared runtime packages without executing cached code or downloading.
+    for (const dependency of Object.keys(manifest.dependencies ?? {})) {
+      let parent = fs.realpathSync(directory);
+      let found = fs.existsSync(path.join(path.dirname(parent), dependency, "package.json"));
+      while (!found) {
+        if (fs.existsSync(path.join(parent, "node_modules", dependency, "package.json"))) { found = true; break; }
+        const next = path.dirname(parent); if (next === parent) break; parent = next;
+      }
+      if (!found) process.exit(1);
+    }
   }
-}
+} catch { process.exit(1); }
 NODE
   }
-
-  link_hyperframes_cli() {
-    local binary
-    binary="$(node -e 'const b=JSON.parse(require("fs").readFileSync(process.argv[1])).bin; process.stdout.write(typeof b==="string"?b:b.hyperframes)' "$node_modules_directory/hyperframes/package.json")"
-    mkdir -p "$node_modules_directory/.bin"
-    rm -f "$node_modules_directory/.bin/hyperframes"
-    ln -sfn "../hyperframes/$binary" "$node_modules_directory/.bin/hyperframes"
+  tree_valid() {
+    module_valid "$1/hyperframes" hyperframes "$required_hyperframes_version" \
+      && module_valid "$1/gsap" gsap "$required_gsap_version"
   }
-
-  validate_hyperframes() {
-    node --input-type=module -e '
-      const { pathToFileURL } = await import("node:url");
-      const { resolveLockedHyperframesCli } = await import(pathToFileURL(process.argv[1]).href);
-      resolveLockedHyperframesCli(process.argv[2]);
-    ' "$script_directory/workflow-utils.mjs" "$job_directory" >/dev/null 2>&1
+  preflight_destinations() {
+    local candidate
+    [[ ! -L "$hyperframes_directory/assets" && ! -L "$hyperframes_directory/assets/gsap.min.js" ]] || { echo "GSAP browser asset must belong to this job" >&2; return 1; }
+    for candidate in "$hyperframes_directory/assets" "$node_modules_directory/.bin"; do
+      [[ ! -e "$candidate" || ( -d "$candidate" && -w "$candidate" && ! -L "$candidate" ) ]] || { echo "Dependency destination must be a writable job directory: $candidate" >&2; return 1; }
+    done
+    for candidate in "$hyperframes_directory/assets/gsap.min.js" "$hyperframes_directory/package-lock.json"; do
+      [[ ! -L "$candidate" && ( ! -e "$candidate" || ( -f "$candidate" && -w "$candidate" ) ) ]] || { echo "Dependency destination must be a writable job file: $candidate" >&2; return 1; }
+    done
+    [[ -w "$hyperframes_directory" && ! -d "$node_modules_directory/.bin/hyperframes" ]] || { echo "Dependency destination is not writable" >&2; return 1; }
   }
-
-  prepare_gsap() {
-    local cached staging
-    if [[ "$(module_version "$node_modules_directory/gsap" 2>/dev/null || true)" != "$required_gsap_version"
-      || ! -f "$node_modules_directory/gsap/dist/gsap.min.js" ]]; then
-      rm -rf "$node_modules_directory/gsap"
-      cached="$(find_job_module gsap "$required_gsap_version" || true)"
-      if [[ -n "$cached" ]]; then
-        copy_tree "$cached" "$node_modules_directory/gsap" || cached=""
-      fi
-      if [[ -z "$cached" ]]; then
-        cached="$(find_npx_module gsap "$required_gsap_version" || true)"
-      fi
-      if [[ -n "$cached" ]]; then
-        [[ -d "$node_modules_directory/gsap" ]] || ln -s "$cached" "$node_modules_directory/gsap"
+  finish_job() {
+    local binary asset_candidate="$hyperframes_directory/assets/.gsap-runtime-$$"
+    binary="$(node -e 'const b=JSON.parse(require("fs").readFileSync(process.argv[1])).bin; process.stdout.write(typeof b==="string"?b:b.hyperframes)' "$node_modules_directory/hyperframes/package.json")" || return 1
+    preflight_destinations || return 1
+    mkdir -p "$node_modules_directory/.bin" "$hyperframes_directory/assets" || return 1
+    rm -f "$node_modules_directory/.bin/hyperframes" || return 1
+    ln -s "../hyperframes/$binary" "$node_modules_directory/.bin/hyperframes" || return 1
+    [[ ! -e "$asset_candidate" && ! -L "$asset_candidate" ]] || return 1
+    if cp "$node_modules_directory/gsap/dist/gsap.min.js" "$asset_candidate" \
+      && mv "$asset_candidate" "$hyperframes_directory/assets/gsap.min.js"; then
+      return 0
+    fi
+    rm -f "$asset_candidate"
+    return 1
+  }
+  publish_job() {
+    local prepared="$1" prepared_lock="${2:-}" previous="$hyperframes_directory/.dependencies-previous-$$" candidate
+    preflight_destinations || return 1
+    [[ ! -e "$previous" && ! -L "$previous" ]] || { echo "Dependency backup already exists: $previous" >&2; return 1; }
+    mkdir "$previous" || return 1
+    # Keep both dependencies and generated resources until every preparation step succeeds.
+    for candidate in gsap.min.js package-lock.json; do
+      local source="$hyperframes_directory/$candidate"
+      [[ "$candidate" != gsap.min.js ]] || source="$hyperframes_directory/assets/$candidate"
+      if [[ -f "$source" ]] && ! cp "$source" "$previous/$candidate"; then rm -rf "$previous"; return 1; fi
+    done
+    if [[ -f "$prepared_lock" ]] && ! cp "$prepared_lock" "$previous/new-package-lock.json"; then rm -rf "$previous"; return 1; fi
+    if [[ -e "$node_modules_directory" ]] && ! mv "$node_modules_directory" "$previous/node_modules"; then rm -rf "$previous"; return 1; fi
+    if mv "$prepared" "$node_modules_directory" && finish_job \
+      && { [[ ! -f "$previous/new-package-lock.json" ]] || mv "$previous/new-package-lock.json" "$hyperframes_directory/package-lock.json"; }; then
+      rm -rf "$previous" || echo "Prepared dependencies passed; retained backup: $previous" >&2
+      return 0
+    fi
+    rm -rf "$node_modules_directory" || { echo "Rollback needs recovery from $previous" >&2; return 1; }
+    [[ ! -e "$previous/node_modules" ]] || mv "$previous/node_modules" "$node_modules_directory" || { echo "Rollback needs recovery from $previous" >&2; return 1; }
+    for candidate in gsap.min.js package-lock.json; do
+      local destination="$hyperframes_directory/$candidate"
+      [[ "$candidate" != gsap.min.js ]] || destination="$hyperframes_directory/assets/$candidate"
+      if [[ -f "$previous/$candidate" ]]; then
+        mv "$previous/$candidate" "$destination" || { echo "Rollback needs recovery from $previous" >&2; return 1; }
       else
-        mkdir -p "$cache_directory" "$cache_node_modules"
-        staging="$hyperframes_directory/.gsap-install-$process_id"
-        rm -rf "$staging"
-        if ! npm install --prefix "$staging" --no-save --package-lock=false --ignore-scripts "gsap@$required_gsap_version"; then
-          rm -rf "$staging"
-          echo "Could not retrieve the pinned GSAP package. Check npm network access and retry." >&2
-          exit 69
-        fi
-        publish_dependencies "$staging/node_modules"
-        ln -s "$cache_node_modules/gsap" "$node_modules_directory/gsap"
-        rm -rf "$staging"
+        rm -f "$destination" || { echo "Rollback needs recovery from $previous" >&2; return 1; }
       fi
-    fi
-    [[ "$(module_version "$node_modules_directory/gsap" 2>/dev/null || true)" == "$required_gsap_version"
-      && -f "$node_modules_directory/gsap/dist/gsap.min.js" ]] || {
-      echo "GSAP@$required_gsap_version is missing or incomplete" >&2
-      return 1
-    }
-    mkdir -p "$hyperframes_directory/assets"
-    cp "$node_modules_directory/gsap/dist/gsap.min.js" "$hyperframes_directory/assets/gsap.min.js"
-    [[ -f "$hyperframes_directory/assets/gsap.min.js" ]] || { echo "GSAP browser runtime is missing" >&2; exit 66; }
+    done
+    rm -rf "$previous"
+    echo "Dependency preparation failed; previous dependencies and resources were restored" >&2
+    return 1
   }
 
-  cache_valid() {
-    [[ "$(module_version "$cache_node_modules/hyperframes" 2>/dev/null || true)" == "$required_hyperframes_version" ]] \
-      && module_cli_valid "$cache_node_modules/hyperframes" >/dev/null 2>&1 \
-      && [[ "$(module_version "$cache_node_modules/gsap" 2>/dev/null || true)" == "$required_gsap_version" ]] \
-      && [[ -f "$cache_node_modules/gsap/dist/gsap.min.js" ]]
-  }
+  preflight_destinations || exit 66
 
-  remove_path() {
-    node -e 'require("node:fs").rmSync(process.argv[1], { recursive: true, force: true })' "$1"
-  }
-
-  attach_shared_cache() {
-    local linked_target=""
-    if [[ -L "$node_modules_directory" ]]; then
-      linked_target="$(readlink "$node_modules_directory")"
-    fi
-    if [[ "$linked_target" != "$cache_node_modules" ]]; then
-      if [[ -e "$node_modules_directory" || -L "$node_modules_directory" ]]; then
-        remove_path "$node_modules_directory"
-      fi
-      ln -s "$cache_node_modules" "$node_modules_directory"
-    fi
-    link_hyperframes_cli
-    validate_hyperframes || return 1
-    prepare_gsap
-  }
-
-  move_job_dependencies_to_shared_cache() {
-    mkdir -p "$cache_directory"
-    if ! cache_valid; then
-      [[ -d "$node_modules_directory" && ! -L "$node_modules_directory" ]] || return 1
-      publish_dependencies "$node_modules_directory"
-      remove_path "$node_modules_directory"
-    fi
-    cache_valid || return 1
-    attach_shared_cache
-  }
-
-  if cache_valid; then
-    attach_shared_cache || { echo "Could not link shared dependencies into this job" >&2; exit 66; }
-    echo "Reused pinned HyperFrames/GSAP: $cache_node_modules"
+  if tree_valid "$node_modules_directory"; then
+    finish_job
+    echo "Reused job dependencies: $hyperframes_directory"
     return
   fi
-
-  if [[ ! -L "$node_modules_directory"
-    && "$(module_version "$node_modules_directory/hyperframes" 2>/dev/null || true)" == "$required_hyperframes_version" ]] \
-    && module_cli_valid "$node_modules_directory/hyperframes" >/dev/null 2>&1 \
-    && [[ "$(module_version "$node_modules_directory/gsap" 2>/dev/null || true)" == "$required_gsap_version" ]] \
-    && [[ -f "$node_modules_directory/gsap/dist/gsap.min.js" ]]; then
-    link_hyperframes_cli
-    validate_hyperframes || { echo "Existing job HyperFrames installation is incomplete" >&2; exit 66; }
-    prepare_gsap || exit 66
-    move_job_dependencies_to_shared_cache || { echo "Could not move job dependencies into the shared repository cache" >&2; exit 66; }
-    echo "Adopted job dependencies: $cache_node_modules"
-    return
-  fi
-
-  cached_hyperframes="$(find_job_node_modules || true)"
-  if [[ -n "$cached_hyperframes" ]]; then
-    rm -rf "$node_modules_directory"
-    if copy_tree "$cached_hyperframes" "$cache_node_modules"; then
-      ln -s "$cache_node_modules" "$node_modules_directory"
-      link_hyperframes_cli
-      if validate_hyperframes && prepare_gsap; then
-        move_job_dependencies_to_shared_cache || { echo "Could not move reusable dependencies into the shared cache" >&2; exit 66; }
-        echo "Reused dependencies from ${cached_hyperframes%/hyperframes/node_modules}: $cache_node_modules"
-        return
-      fi
-    fi
-    rm -rf "$node_modules_directory"
-  fi
-
-  cached_hyperframes="$(find_npx_module hyperframes "$required_hyperframes_version" || true)"
-  cached_gsap="$(find_npx_module gsap "$required_gsap_version" || true)"
-  if [[ -n "$cached_hyperframes" && -n "$cached_gsap" ]]; then
-    rm -rf "$node_modules_directory"
-    mkdir -p "$node_modules_directory/.bin"
-    ln -s "$cached_hyperframes" "$node_modules_directory/hyperframes"
-    ln -s "$cached_gsap" "$node_modules_directory/gsap"
-    link_hyperframes_cli
-    if validate_hyperframes && prepare_gsap; then
-      move_job_dependencies_to_shared_cache || { echo "Could not move cached dependencies into the shared repository cache" >&2; exit 66; }
-      echo "Reused npm-cached dependencies: $cache_node_modules"
+  for candidate in "$repository_root"/jobs/*/hyperframes/node_modules "$repository_root/node_modules"; do
+    [[ -d "$candidate" && ! -L "$candidate" && "$candidate" != "$node_modules_directory" ]] || continue
+    tree_valid "$candidate" || continue
+    staging="$(mktemp -d "$hyperframes_directory/.dependency-reuse.XXXXXX")"
+    if cp -R -L "$candidate/." "$staging/" && tree_valid "$staging"; then
+      publish_job "$staging" || { rm -rf "$staging"; exit 66; }
+      echo "Copied pinned dependencies into this job from $candidate"
       return
     fi
-    rm -rf "$node_modules_directory"
+    rm -rf "$staging"
+  done
+  local cached_hyperframes="" cached_gsap="" package_json module_directory
+  for package_json in "$npm_cache"/_npx/*/node_modules/hyperframes/package.json; do
+    module_directory="${package_json%/package.json}"
+    module_valid "$module_directory" hyperframes "$required_hyperframes_version" || continue
+    cached_hyperframes="$(cd "$module_directory" && pwd -P)"; break
+  done
+  for package_json in "$npm_cache"/_npx/*/node_modules/gsap/package.json; do
+    module_directory="${package_json%/package.json}"
+    module_valid "$module_directory" gsap "$required_gsap_version" || continue
+    cached_gsap="$(cd "$module_directory" && pwd -P)"; break
+  done
+  if [[ -n "$cached_hyperframes" && -n "$cached_gsap" ]]; then
+    staging="$(mktemp -d "$hyperframes_directory/.dependency-reuse.XXXXXX")"
+    ln -s "$cached_hyperframes" "$staging/hyperframes"
+    ln -s "$cached_gsap" "$staging/gsap"
+    publish_job "$staging" || { rm -rf "$staging"; exit 66; }
+    echo "Linked exact npm-cached dependencies into this job"
+    return
   fi
-
-  staging="$hyperframes_directory/.install-$process_id"
-  if [[ -e "$staging" || -L "$staging" ]]; then
-    remove_path "$staging"
-  fi
-  mkdir -p "$staging"
+  [[ "$approval" == "--yes" ]] || {
+    echo "No complete exact-version dependency cache. Download requires --yes; current job dependencies were preserved." >&2
+    exit 77
+  }
+  staging="$(mktemp -d "$hyperframes_directory/.dependency-install.XXXXXX")"
   cp "$hyperframes_directory/package.json" "$staging/package.json"
-  if [[ -f "$hyperframes_directory/package-lock.json" ]]; then
-    cp "$hyperframes_directory/package-lock.json" "$staging/package-lock.json"
+  [[ ! -f "$hyperframes_directory/package-lock.json" ]] || cp "$hyperframes_directory/package-lock.json" "$staging/package-lock.json"
+  if ! npm install --cache "$download_cache" --prefix "$staging" --no-audit --no-fund || ! tree_valid "$staging/node_modules"; then
+    rm -rf "$staging"
+    echo "Pinned job dependency installation failed; previous dependencies were preserved" >&2; exit 69
   fi
-  if ! npm install --prefix "$staging" --no-audit --no-fund; then
-    remove_path "$staging"
-    echo "Could not install the pinned HyperFrames/GSAP packages into the repository cache. Check npm network access and retry." >&2
-    exit 69
-  fi
-  publish_dependencies "$staging/node_modules"
-  remove_path "$staging"
-
-  move_job_dependencies_to_shared_cache || { echo "Could not move installed dependencies into the shared repository cache" >&2; exit 66; }
-  echo "Installed pinned dependencies: $cache_node_modules"
+  publish_job "$staging/node_modules" "$staging/package-lock.json" || { rm -rf "$staging"; exit 66; }
+  rm -rf "$staging"
+  echo "Installed pinned dependencies into this job: $hyperframes_directory"
 }
 
 case "$command_name" in

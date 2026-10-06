@@ -8,6 +8,44 @@
     "fps": { "type": "number", "exclusiveMinimum": 0 },
     "captionMode": { "enum": ["motion-copy", "subtitles"] },
     "designSystem": { "type": "string", "minLength": 1 },
+    "visualOrchestrationVersion": { "enum": [1, 2] },
+    "materials": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "path", "kind", "sha256", "sourceOrRights", "privacyStatus", "visibleFacts", "forbiddenInferences"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+          "path": { "type": "string", "pattern": "^input/" },
+          "kind": { "enum": ["image", "screenshot", "recording", "clip", "document"] },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "sourceOrRights": { "type": "string", "minLength": 1 },
+          "privacyStatus": { "enum": ["approved", "approved-with-mask"] },
+          "visibleFacts": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+          "forbiddenInferences": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+        },
+        "additionalProperties": false
+      }
+    },
+    "mgCadenceExceptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["start", "end", "reason"],
+        "properties": {
+          "start": { "type": "number", "minimum": 0 },
+          "end": { "type": "number", "exclusiveMinimum": 0 },
+          "reason": { "type": "string", "minLength": 1 },
+          "coveredNoneBeatIds": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "beats": {
       "type": "array",
       "minItems": 1,
@@ -63,11 +101,121 @@
               "image": { "type": "string" },
               "alt": { "type": "string" },
               "focus": { "type": "array", "items": { "type": "object" } },
+              "imageWidthPx": { "type": "number", "exclusiveMinimum": 0 },
+              "imageHeightPx": { "type": "number", "exclusiveMinimum": 0 },
               "duration": { "type": "number", "exclusiveMinimum": 0 }
             }
           },
           "mgScope": { "enum": ["none", "local"] },
+          "motionProfile": { "enum": ["thoughtful-editorial-v1"] },
+          "surfaceTreatment": { "enum": ["direct-overlay", "evidence-surface"] },
+          "noMgReason": { "type": "string", "minLength": 1 },
           "captionSafeZonePass": { "type": "boolean" },
+          "materialRefs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["materialId", "role", "displayStartFrame", "displayEndFrame", "crop", "masking"],
+              "properties": {
+                "materialId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+                "role": { "type": "string", "minLength": 1 },
+                "displayStartFrame": { "type": "integer", "minimum": 0 },
+                "displayEndFrame": { "type": "integer", "minimum": 1 },
+                "crop": { "type": "string", "minLength": 1 },
+                "masking": { "type": "string", "minLength": 1 }
+              },
+              "additionalProperties": false
+            }
+          },
+          "objectCues": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "semanticRole", "spokenTriggerWordId", "preMotionFrame", "firstLegibleFrame", "settledFrame", "exitTriggerWordId", "invisibleFrame"],
+              "properties": {
+                "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+                "semanticRole": { "type": "string", "minLength": 1 },
+                "spokenTriggerWordId": { "type": "string", "pattern": "^.+:(?:measured-)?word-[0-9]{3,}$" },
+                "preMotionFrame": { "type": "integer", "minimum": 0 },
+                "firstLegibleFrame": { "type": "integer", "minimum": 0 },
+                "settledFrame": { "type": "integer", "minimum": 0 },
+                "exitTriggerWordId": { "type": "string", "pattern": "^.+:(?:measured-)?word-[0-9]{3,}$" },
+                "invisibleFrame": { "type": "integer", "minimum": 0 },
+                "holdKind": { "enum": ["standard", "evidence-reading", "causal-sequence", "rhetorical-pause"] }
+              }
+            }
+          },
+          "visualDecision": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": ["mode", "memoryAnchor", "supportingWordIds", "fallback"],
+                "properties": {
+                  "mode": { "const": "annotation" },
+                  "memoryAnchor": { "type": "string", "minLength": 1 },
+                  "supportingWordIds": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": { "type": "string", "pattern": "^.+:(?:measured-)?word-[0-9]{3,}$" }
+                  },
+                  "fallback": { "type": "string", "minLength": 1 }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "required": ["mode", "informationDelta", "objectFamily", "visualVerb", "evolutionMode", "argumentStates", "fallback"],
+                "properties": {
+                  "mode": { "enum": ["argument", "evidence"] },
+                  "informationDelta": {
+                    "type": "object",
+                    "required": ["kind", "statement", "basis"],
+                    "properties": {
+                      "kind": { "enum": ["evidence", "quote-context", "comparison", "causal-chain", "selection", "state-change", "consequence", "decision-aid"] },
+                      "statement": { "type": "string", "minLength": 1 },
+                      "basis": { "enum": ["spoken-structure", "registered-material", "both"] },
+                      "supportingWordIds": {
+                        "type": "array",
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "items": { "type": "string", "pattern": "^.+:(?:measured-)?word-[0-9]{3,}$" }
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "objectFamily": { "type": "string", "minLength": 1 },
+                  "visualVerb": { "type": "string", "minLength": 1 },
+                  "evolutionMode": { "enum": ["replace", "evolve"] },
+                  "argumentStates": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 4,
+                    "items": {
+                      "type": "object",
+                      "required": ["id", "anchorWordId", "operation", "activeObjectCueIds", "stateChange", "readability"],
+                      "properties": {
+                        "id": { "type": "string", "minLength": 1 },
+                        "anchorWordId": { "type": "string", "pattern": "^.+:(?:measured-)?word-[0-9]{3,}$" },
+                        "operation": { "enum": ["introduce", "compare", "filter", "link", "transform", "resolve"] },
+                        "activeObjectCueIds": {
+                          "type": "array",
+                          "minItems": 1,
+                          "uniqueItems": true,
+                          "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" }
+                        },
+                        "stateChange": { "type": "string", "minLength": 1 },
+                        "readability": { "enum": ["clear", "impact"] }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "fallback": { "type": "string", "minLength": 1 }
+                },
+                "additionalProperties": false
+              }
+            ]
+          },
           "intent": { "type": "string" },
           "onScreenCopy": {
             "type": "array",
@@ -84,8 +232,8 @@
           "primaryFlowAxis": { "enum": ["horizontal", "vertical"] },
           "visualReference": { "type": "string", "minLength": 1 },
           "semanticTopology": { "enum": ["sequence", "comparison", "convergence", "branch", "mapping", "emphasis", "evidence", "parallel", "linear", "one-to-many", "demonstration"] },
-          "entryAnchorWordId": { "type": "string", "pattern": "^.+:word-[0-9]{3}$" },
-          "exitAnchorWordId": { "type": "string", "pattern": "^.+:word-[0-9]{3}$" },
+          "entryAnchorWordId": { "type": "string", "pattern": "^.+:(?:measured-)?word-[0-9]{3,}$" },
+          "exitAnchorWordId": { "type": "string", "pattern": "^.+:(?:measured-)?word-[0-9]{3,}$" },
           "exitAnchorOffsetFrames": { "type": "integer", "minimum": 0, "maximum": 12 },
           "reuseGroup": { "type": "string", "minLength": 1 },
           "reuseReason": { "type": "string", "minLength": 1 },
@@ -141,7 +289,7 @@
           },
           "layout": {
             "type": "object",
-            "required": ["primaryOccupancyRatio", "primaryBoundsNormalized", "supportingElementCount", "emptyComponentCount", "panelPaddingPx", "faceCover"],
+            "required": ["primaryOccupancyRatio", "primaryBoundsNormalized", "supportingElementCount", "emptyComponentCount", "panelPaddingPx", "safeAreaPass", "faceCover"],
             "properties": {
               "primaryOccupancyRatio": { "type": "number", "minimum": 0, "maximum": 1 },
               "primaryBoundsNormalized": {
@@ -160,8 +308,9 @@
               "panelPaddingPx": { "type": "number", "minimum": 0 },
               "safeAreaPass": { "const": true },
               "faceCover": { "enum": ["none", "partial", "intentional"] },
-              "faceCoverApproval": { "const": "user" },
-              "faceSafetyNote": { "type": "string", "minLength": 1 }
+              "focalPlacement": { "enum": ["center", "side"] },
+              "focalPlacementRationale": { "type": "string", "minLength": 1 },
+              "faceCoverRationale": { "type": "string", "minLength": 1 }
             }
           },
           "typography": {
@@ -190,8 +339,43 @@
         },
         "allOf": [
           {
+            "if": { "properties": { "templateId": { "enum": ["ordered-steps", "parallel-points", "linear-flow", "relation-map", "converge-sources", "map-transform", "comparison", "metric-proof", "evidence-focus", "quote", "code-snippet", "correction", "annotation"] } }, "required": ["templateId"] },
+            "else": { "properties": { "onScreenCopy": { "minItems": 1, "maxItems": 6 } } }
+          },
+          {
             "if": { "properties": { "recipe": { "const": "caption-only" } }, "required": ["recipe"] },
             "else": { "required": ["primaryFlowAxis", "visualReference", "semanticTopology", "entryAnchorWordId", "exitAnchorWordId", "exitAnchorOffsetFrames", "exitFrames"] }
+          },
+          {
+            "if": { "properties": { "motionProfile": { "const": "thoughtful-editorial-v1" } }, "required": ["motionProfile"] },
+            "then": {
+              "required": ["surfaceTreatment", "objectCues"],
+              "properties": {
+                "objectCues": {
+                  "minItems": 1,
+                  "items": { "required": ["holdKind"] }
+                }
+              },
+              "allOf": [
+                {
+                  "if": { "properties": { "surfaceTreatment": { "const": "direct-overlay" } }, "required": ["surfaceTreatment"] },
+                  "then": {
+                    "properties": {
+                      "materialRefs": { "maxItems": 0 }
+                    }
+                  }
+                },
+                {
+                  "if": { "properties": { "surfaceTreatment": { "const": "evidence-surface" } }, "required": ["surfaceTreatment"] },
+                  "then": {
+                    "required": ["materialRefs"],
+                    "properties": {
+                      "materialRefs": { "minItems": 1 }
+                    }
+                  }
+                }
+              ]
+            }
           }
         ]
       }

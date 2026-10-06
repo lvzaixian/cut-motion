@@ -1,46 +1,143 @@
 # Subtitle-Mode MG Standard
 
-Captions carry the spoken wording. MG adds a useful relationship, evidence, scale, structure or action aid. Choose a template from the [catalog](../templates/motion-graphics/README.md); use a custom module when the content requires a different structure.
+This standard applies when `captionMode` is `subtitles`. Captions carry the complete spoken wording; MG is an editorial annotation layer, not a second script.
 
-## Author once
+## Core rule
 
-In `planning-inputs.json`, each local MG needs:
+Add MG only when it closes a viewer cognition gap by improving comprehension, credibility, calibration, organization, or action. New information alone is insufficient: its benefit must exceed the attention, reading, and credibility cost it introduces.
 
-- its interval, source segment IDs, spoken entry/exit anchors and exact template content (`templateData.items` or legacy `copy`);
-- a template ID, one short `intent` and a `supportRole`;
-- A/B placement and bounds that keep the caption region clear;
-- source references for added claims or evidence, and explanations for newly introduced terms.
+If removing an MG causes no specific loss beyond “the frame is less lively,” remove it.
 
-The generator derives caption cue IDs, shared template style, topology, flow, motion families and the readable documents. Do not duplicate template copy in `onScreenCopy` or hand-fill derived metadata. `viewerQuestion`, `removalLoss`, `visualEncoding` and `stillFrameValue` are optional legacy notes, not required essays. Geometry is checked from bounds; `safeAreaPass` and `captionSafeZonePass` declarations are unnecessary.
+## Layer ownership
 
-| Support role | Use |
+| Layer | Primary responsibility |
 | --- | --- |
-| evidence | A real source, interface or clearly labelled reconstruction |
-| explanation | A causal relationship or state change |
-| calibration | A baseline, range or comparison |
-| organization | A group, sequence or hierarchy |
-| action | A decision or next step |
-| consequence | A before/after result |
+| Voice | Claim, argument, tone, and personality |
+| Captions | Complete accessible wording |
+| Talking head or evidence footage | Human credibility, performance, and observable proof |
+| MG | A relationship, proof, scale, structure, consequence, or action aid that the other layers do not already supply |
 
-Caption-only intervals need no MG rationale. Select meaningful passages instead of targeting a fixed MG count or cadence.
+The talking head remains useful visual information. Do not replace it merely to create activity.
 
-## Visual rules
+## Valid cognition gaps
 
-Background cards use their final width and height from the first frame; internal content may reveal progressively, but the card must not grow or resize in response. A visible element must already be supported by its background.
+Every local MG must answer one current viewer question and declare one `supportRole`:
 
-- Use a short A-axis annotation for one fact; a compact diagram for a simple relation; a coherent B-axis stage for dependent elements or a demonstration.
-- Preserve the template's visual grammar while adapting copy, item count, flow and placement to the recording. Do not merge separate spoken items or reverse a relationship to fit sample slots; use a custom module when the structure needs it.
-- Default A-roll overlays to the upper-middle area (280px from the top on a 1080×1920 canvas). Keep the overall MG and its background card horizontally centered on the video's vertical midline. Internal text and rows may align left or right; this does not move the card. Fit its height and width to avoid captions; eyes and mouth do not need clearance; tall sequences may start higher. A centered compact card can have a centered heading and left-aligned rows without a wide empty panel.
-- Keep captions and evidence legible. Use actual layout bounds to keep MG clear of captions; a boolean declaration cannot establish clearance.
-- In A-axis mode, groups normally replace one another after 1.8–3.0 seconds. Face overlap has no separate duration limit or approval requirement; use spoken meaning and readability to set the hold.
-- In B-axis mode, related elements can accumulate within one scene and exit together.
-- Reveal in spoken and causal order, keep labels next to their objects, and hold the resolved state long enough to read. Keep background cards at their final size while revealing content; neutral organizational headings may precede the content, but a spoken tool name or result follows its own keyword even when displayed as a heading.
-- From the first composition, bind each independent spoken element to its own [keyword onset](mg-speech-timing.md), not the whole-entry anchor or a fixed stagger. A single isolated note may enter directly. Use the passage's exit anchor for a unified or staged exit; custom modules follow the [composition contract](technology.md#hyperframes-composition-contract).
-- Only exact `onScreenCopy` strings may appear in the frame. Production notes and explanations of what the animation is doing stay out of the video.
-- Prefer the real evidence asset to an invented card. Label reconstructions and estimates; keep claims traceable and avoid implying more than the source supports.
+| `supportRole` | Viewer question | Preferred treatment |
+| --- | --- | --- |
+| `evidence` | “Can I verify this?” | Real report, interface, source, or clearly labelled reconstruction |
+| `explanation` | “Why or how does this happen?” | Causal chain, system map, or state change |
+| `calibration` | “Is this large, small, normal, or exceptional?” | Baseline, range, benchmark, or controlled comparison |
+| `organization` | “How do these ideas relate?” | Grouping, sequence, hierarchy, or progress map |
+| `action` | “What should I do or choose?” | Decision aid, checklist, or next step |
+| `consequence` | “What changes if this is true?” | Before/after state or result simulation |
 
-## Assembly and review
+Data, mechanism diagrams, comparisons, and decision trees are visual tools inside these roles; they are not independent reasons to add MG.
 
-`compose-job.mjs` instantiates templates and installs captions in order. For a specific local revision, use `assemble-mg.mjs --beat <id>`; preserve manually edited modules.
+## Selection priority
 
-Before full export, follow [MG final-state self-review](workflow.md#mg-final-state-self-review) for actual copy and layout. The rendered video is the user handoff. Keep readability, synchronization, caption clearance and source accuracy as the acceptance criteria; no five-part written review or automated visual gate is required.
+Prefer, in order:
+
+1. verifiable evidence;
+2. relationships that are difficult to understand from speech alone;
+3. immediately usable decisions or checks;
+4. scale and context;
+5. a compact memory anchor;
+6. decorative stimulation.
+
+Decorative motion may support an approved MG but cannot justify one.
+
+## Planning contract
+
+Each subtitle-mode beat with `mgScope: "local"` must record:
+
+- `captionCueIds`: the exact approved single-line caption cues that create the node;
+- `onScreenCopy`: the exact, exhaustive strings that may render in the MG;
+- `visualStyle`: the concrete visual metaphor and motion family proposed for review;
+- `semanticTopology`: the relationship being encoded, such as sequence, convergence, branch, comparison, or mapping;
+- `entryAnchorWordId`: the aligned spoken word that triggers the first meaningful visual event;
+- `primaryFlowAxis`: one horizontal or vertical main chain;
+- `visualReference`: the approved sample/component being inherited, or a clearly named new proposal;
+- `viewerQuestion`: the question created by the current spoken passage;
+- `supportRole`: one role from the table above;
+- `removalLoss`: what the viewer would specifically lose if the MG were removed;
+- `visualEncoding`: the relationship, evidence, or state encoded by the picture;
+- `stillFrameValue`: what remains understandable when motion is paused for one second;
+- `attentionCost`: `low`, `medium`, or `high`;
+- `layout.focalPlacement`: `center` or `side`, chosen for the viewer's current reading task;
+- `layout.focalPlacementRationale`: why that feed-scale location is clearest;
+- `layout.faceCoverRationale` whenever `faceCover` is `partial` or `intentional`;
+- `evidenceSource` when `supportRole` is `evidence`;
+- `factualClaims`: every factual addition with its traceable source, or an empty array;
+- `terms`: every introduced technical term or formula with a plain-language explanation, or an empty array;
+- `attentionCostReason` for a high-cost B-axis scene.
+- for V2, `visualDecision`: the selected treatment and its grounded information contribution; `argument` and `evidence` carry the supported `informationDelta` and readable state path, while `annotation` carries a grounded `memoryAnchor`, `supportingWordIds`, and `fallback`.
+
+Caption-only beats do not need these fields.
+
+Before implementation, `docs/caption-plan.md` must show every caption cue and every local MG mapping. The creative confirmation package must also list the ranges that intentionally receive no MG. In V2, a subtitle passage stays MG-free unless `argument` or `evidence` declares one supported information delta and an adequate readable state path, or `annotation` declares a grounded memory anchor, support words, and fallback; annotation is not a substitute for an argument. `mgCadenceExceptions.coveredNoneBeatIds` records intentional no-MG ranges without overturning them. Cadence coverage is not an MG-density target. See [docs/design/2026-08-21-visual-argument-decision-design.md](design/2026-08-21-visual-argument-decision-design.md) for examples and non-goals.
+
+`onScreenCopy` is the render contract. Viewer questions, rationale, caveats, removal loss, source notes, and phrases such as “经验档位” or “这里需要说明” are production metadata and must never leak into the frame. Prefer nouns, numbers, and relationship labels; captions already carry complete sentences.
+
+## Lowest-cost visual rule
+
+Use the least demanding form that closes the gap:
+
+- no cognition gap: caption and talking head only;
+- one fact or status: short A-axis annotation;
+- one relation or short sequence: A-axis diagram;
+- three or more dependent elements, a system, or a decision structure: coherent B-axis scene;
+- factual proof: real evidence asset before an invented card.
+
+Do not introduce a technical term, formula, or benchmark that creates more unanswered questions than it resolves. A high-attention-cost MG is valid only on the B-axis with a documented reason; otherwise simplify or delete it.
+
+## Timing and information behavior
+
+- Trigger MG at a semantic boundary or when the viewer question arises; never add it to satisfy a cadence target. Record intentional V2 `none` ranges rather than converting them into pattern interrupts.
+- Start the first meaningful event within the design-system delay limit, and reveal a connector with its destination container within the shared frame tolerance.
+- Treat MG as punctuation, not a continuous layer. In a typical subtitle-mode talking-head video, most runtime should remain talking head plus captions.
+- One MG passage performs one cognitive job.
+- In A-axis overlay mode, use replacement cadence: a local information group normally remains for 1.8–3.0 seconds, exits completely, and is then replaced. Do not retain earlier cards while a later idea arrives.
+- Place A-axis MG in the viewer's most legible feed-scale focal position for the current question; do not push core information to the top or bottom merely to preserve the face. The speaker is a trust and connection carrier, not a default protected zone. Intentional face coverage is allowed when it improves current semantic understanding and does not cover captions, PiP, evidence, protected or necessary UI, or platform chrome; inspect entrance, peak, hold, and exit at real feed scale, and retain one dominant focal group.
+- Declare one horizontal or vertical primary flow. Do not turn the main chain 90 degrees; branch on the secondary axis only at a terminal node.
+- Reuse the approved visual reference for copy, timing, or size-only changes.
+- Repeating a complete visual signature requires an explicit reuse group and semantic reason.
+- In B-axis stage mode, dependent elements may accumulate within one coherent page and exit together when that page resolves.
+- Reveal components in causal or reading order, then hold the resolved state long enough to inspect. For related evidence screenshots, prefer a downward sequential reveal with cumulative visibility inside one group and a shared exit; do not accumulate separate A-axis ideas. Bind every image to the actual spoken point and verify all requested images in encoded frames. A brief proof montage should normally last no more than about one second longer than nearby lifestyle photos; detailed reading needs a separately planned window. The reference job’s 1.95 seconds is not a reusable fixed duration.
+- Keep labels adjacent to the element they describe; avoid detached legends and visual search.
+- Prefer persistent end states over fleeting symbols.
+- Do not add a simultaneous reading task during the densest caption phrase.
+- Use motion to expose change, dependency, comparison, or hierarchy. If a static state communicates equally well, keep the motion restrained.
+
+## Evidence and claims
+
+- A factual addition needs a traceable source in the project research record. Keep production checks in internal records; show only labels needed for audience understanding. Removing an internal label does not authorize stronger claims or removal of a necessary factual qualification.
+- Platform promises, simulated interfaces, reconstructed reports, and estimates must be labelled as such.
+- Do not generalize from one price, device, benchmark, or anecdote.
+- Show the assumption and important omitted cost for estimates.
+- Never use juxtaposition, scale, or animation to imply a stronger conclusion than the evidence supports.
+
+## Review tests
+
+Every proposed MG must pass:
+
+1. **Gap test:** it answers a natural question created by the current passage.
+2. **Removal test:** `removalLoss` names a concrete comprehension, evidence, calibration, organization, or action loss.
+3. **Still-frame test:** a one-second pause reveals a relationship, proof, or structure—not another version of the caption.
+4. **Cost test:** its benefit exceeds visual reading, attention switching, and credibility cost.
+5. **Source test:** every new factual claim is traceable or explicitly framed as an estimate.
+
+## Blocking failures
+
+- caption paraphrase presented as a headline;
+- novelty unrelated to the current viewer question;
+- text-heavy MG competing with active captions;
+- an unexplained technical term or formula;
+- evidence represented by an unlabeled invented interface;
+- a complex A-axis overlay that should be a B-axis scene;
+- a cadence-filling pattern interrupt with no semantic purpose, or an undocumented cadence exception;
+- A-axis information groups accumulated into a page instead of being replaced;
+- a transient graphic whose resolved meaning never remains visible;
+- any overlap with captions, PiP, evidence, protected UI, or platform chrome;
+- face coverage without current semantic value or without one dominant focal group;
+- an MG that cannot state a concrete `removalLoss`.

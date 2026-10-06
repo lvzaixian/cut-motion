@@ -6,7 +6,7 @@ import { isPathInside, readJson, sha256File, writeJsonAtomic } from "./workflow-
 const [jobArgument, kind, sourceArgument, ...rawOptions] = process.argv.slice(2);
 const targets = {
   roughcut: "roughcut/a-roll.mp4",
- final: "output/final.mp4"
+  final: "output/final.mp4"
 };
 if (!jobArgument || !targets[kind] || !sourceArgument) {
   console.error("Usage: node promote-job-media.mjs <job> <roughcut|final> <source-media> [--consume-source]");
@@ -34,13 +34,7 @@ if (consumeSource) {
     throw new Error("Cannot consume immutable input media");
   }
 }
-if (fs.existsSync(workflowPath)) {
-  const workflow = readJson(workflowPath);
-  const gate = workflow.gates?.["rough-cut-review"];
-  if (kind === "roughcut" && gate?.status === "approved" && gate.artifact === targets[kind]) {
-    throw new Error("Cannot replace approved roughcut media before reopening its producing stage");
-  }
-}
+const workflow = fs.existsSync(workflowPath) ? readJson(workflowPath) : null;
 
 const probeMedia = (mediaPath) => {
   const result = spawnSync("ffprobe", [
@@ -61,6 +55,19 @@ const probeMedia = (mediaPath) => {
 
 const sourceProbe = probeMedia(sourcePath);
 const sourceSha256 = sha256File(sourcePath);
+if (kind === "roughcut" && workflow?.authoritativeMediaPath === targets[kind]
+  && workflow.authoritativeMediaSha256 && sourceSha256 !== workflow.authoritativeMediaSha256) {
+  throw new Error("Cannot replace locked roughcut media before reopening rough-cut");
+}
+const roughCutGate = workflow?.gates?.["rough-cut-review"];
+if (kind === "roughcut" && roughCutGate?.status === "approved" && roughCutGate.artifact === targets[kind]
+  && fs.existsSync(targetPath) && sourceSha256 !== sha256File(targetPath)) {
+  throw new Error("Cannot replace approved roughcut media before reopening its producing stage");
+}
+if (kind === "final" && sourcePath !== targetPath && fs.existsSync(targetPath)
+  && sha256File(targetPath) !== sourceSha256) {
+  throw new Error("Preserve the last delivery: render a final.candidate.mp4 and promote it through the workflow after media and title validation");
+}
 fs.mkdirSync(path.dirname(targetPath), { recursive: true });
 const sourceIsCanonical = sourcePath === targetPath;
 

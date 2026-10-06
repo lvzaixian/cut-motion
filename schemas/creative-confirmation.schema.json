@@ -72,7 +72,11 @@
       "properties": {
         "transcript": { "$ref": "#/$defs/authority" },
         "captionPlan": { "$ref": "#/$defs/authority" },
-        "beatMap": { "$ref": "#/$defs/authority" }
+        "beatMap": { "$ref": "#/$defs/authority" },
+        "designSystem": { "$ref": "#/$defs/authority" }
+      },
+      "patternProperties": {
+        "^material:[a-z0-9][a-z0-9-]*$": { "$ref": "#/$defs/authority" }
       },
       "additionalProperties": false
     },
@@ -80,13 +84,14 @@
       "type": "object",
       "required": ["implementationMayStartAfter", "planChangesRequireReapproval", "reapprovalFields"],
       "properties": {
-        "implementationMayStartAfter": { "enum": ["rough-cut-review-approved", "creative-package-approved"] },
-        "planChangesRequireReapproval": { "type": "boolean" },
+        "implementationMayStartAfter": { "enum": ["creative-package-approved", "visual-arrangement-approved"] },
+        "planChangesRequireReapproval": { "const": true },
         "reapprovalFields": {
           "type": "array",
+          "minItems": 9,
           "uniqueItems": true,
           "items": {
-            "enum": ["caption-segmentation", "mg-node-set", "mg-count", "on-screen-copy", "support-role", "visual-style", "primary-flow-axis", "visual-reference", "axis-mode"]
+            "enum": ["caption-segmentation", "mg-node-set", "mg-count", "on-screen-copy", "support-role", "visual-style", "primary-flow-axis", "visual-reference", "axis-mode", "mg-cadence", "focal-placement", "face-cover-rationale", "materials", "object-cues", "visual-arrangement-table"]
           }
         }
       },
@@ -101,23 +106,55 @@
           "required": ["accumulation", "overlayZones", "faceProtection", "surface"],
           "properties": {
             "accumulation": { "const": "replace" },
-            "overlayZones": { "type": "array", "minItems": 1, "items": { "enum": ["top", "bottom", "side"] } },
-            "faceProtection": { "enum": ["unrestricted", "brief-semantic-only", "required"] },
+            "overlayZones": { "type": "array", "minItems": 1, "items": { "enum": ["center", "top", "bottom", "side"] } },
+            "faceProtection": { "enum": ["viewer-cognition-first", "brief-semantic-only", "required"] },
             "surface": {
               "type": "object",
               "required": ["kind", "fullFrame", "opacityRange", "backdropBlurPx"],
-              "properties": {
-                "kind": { "const": "localized-glass" },
-                "fullFrame": { "const": false },
-                "opacityRange": {
-                  "type": "array",
-                  "minItems": 2,
-                  "maxItems": 2,
-                  "items": { "type": "number", "minimum": 0, "maximum": 1 }
+              "oneOf": [
+                {
+                  "properties": {
+                    "kind": { "const": "direct-overlay" },
+                    "fullFrame": { "const": false },
+                    "opacityRange": {
+                      "type": "array",
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "items": { "const": 0 }
+                    },
+                    "backdropBlurPx": { "const": 0 }
+                  },
+                  "additionalProperties": false
                 },
-                "backdropBlurPx": { "type": "number", "minimum": 0, "maximum": 18 }
-              },
-              "additionalProperties": false
+                {
+                  "properties": {
+                    "kind": { "const": "evidence-surface" },
+                    "fullFrame": { "const": false },
+                    "opacityRange": {
+                      "type": "array",
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "items": { "type": "number", "minimum": 0, "maximum": 0.28 }
+                    },
+                    "backdropBlurPx": { "type": "number", "minimum": 0, "maximum": 8 }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "properties": {
+                    "kind": { "const": "localized-glass" },
+                    "fullFrame": { "const": false },
+                    "opacityRange": {
+                      "type": "array",
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "items": { "type": "number", "minimum": 0, "maximum": 1 }
+                    },
+                    "backdropBlurPx": { "type": "number", "minimum": 0, "maximum": 18 }
+                  },
+                  "additionalProperties": false
+                }
+              ]
             }
           },
           "additionalProperties": false

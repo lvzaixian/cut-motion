@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   beginWorkflowRevision,
+  enableVisualArrangementReviewForMotionPlan,
   ensureWorkflowDefaults,
   invalidateCreativeArtifacts,
   isPathInside,
@@ -114,6 +115,7 @@ if (fs.existsSync(confirmationPath)) {
 }
 const previousState = workflow.currentState;
 let invalidated = [];
+if (changed) enableVisualArrangementReviewForMotionPlan(workflow);
 if (changed && previousState !== "intake") {
   const existingReturnState = previousState === "transcription" ? workflow.reconciliationReturnState : null;
   const beforeRoughCutApproval = ["transcription", "rough-cut", "rough-cut-review"].includes(previousState)

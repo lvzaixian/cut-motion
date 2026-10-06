@@ -24,7 +24,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readJson, REAPPROVAL_FIELD_NAMES, sha256File, sha256Text, writeJsonAtomic } from "./workflow-utils.mjs";
+import { readJson, REAPPROVAL_FIELD_NAMES, sha256File, sha256Text, writeJsonAtomic, computeCreativeAuthorities } from "./workflow-utils.mjs";
 import { resolveCaptionCues } from "./caption-review-utils.mjs";
 import { chatcutPages, normalizeCaptionCards } from "./chatcut-caption-data.mjs";
 import {
@@ -36,6 +36,7 @@ import {
   buildSourceWordEvidence
 } from "./plan-artifacts.mjs";
 import { renderCreativeConfirmationDoc, renderMotionPlanDoc } from "./render-plan-docs.mjs";
+import { finalizeSpeechPlan, loadSpeechTiming } from "./mg-speech-timing.mjs";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const [jobArgument, ...flags] = process.argv.slice(2);
@@ -101,6 +102,51 @@ const timelineWindows = useMainTimeline ? null : read("state/timeline-source-win
 const annotationState = read("state/reference-script-annotations.json");
 
 const fps = mainTimelineState.fps ?? firstMainPage?.fps ?? project.fps ?? inputs.fps ?? 30;
+if (useMainTimeline) {
+  const recordPath = rel("state/chatcut-roughcut.json");
+  const record = fs.existsSync(recordPath) ? read("state/chatcut-roughcut.json") : null;
+  const guarded = workflow.visualArrangementReviewRequired === true || record !== null;
+  if (workflow.visualArrangementReviewRequired === true && !record) throw new Error("New visual-review jobs require the recorded ChatCut project, active timeline and source asset before plan generation");
+  if (record) {
+    if (chatcutPages(mainTimelineSnapshot).some(page => page.projectId !== record.projectId
+      || !(record.timelineIds ?? []).includes(page.state?.id)
+      || (record.activeTimelineId && record.activeTimelineId !== page.state?.id))) throw new Error("ChatCut planning snapshot project/timeline differs from the approved rough-cut record");
+    if (!fs.existsSync(rel("state/timeline-source-windows.json"))) throw new Error("ChatCut planning requires its source windows for identity verification");
+    const windows = read("state/timeline-source-windows.json");
+    if (!record.sourceAssetId || windows.sourceAssetId !== record.sourceAssetId
+      || (windows.projectId !== undefined && windows.projectId !== record.projectId)
+      || (windows.timelineId !== undefined && windows.timelineId !== mainTimelineState.id)
+      || Math.abs(windows.timelineFps.numerator / windows.timelineFps.denominator - fps) > 1e-6) throw new Error("ChatCut planning source windows differ from the approved project, source asset or frame rate");
+    const sourcePath = require_(project.sourceVideo ?? "input/source.mp4");
+    if (!windows.sourceSha256 || windows.sourceSha256 !== sha256File(sourcePath)) throw new Error("ChatCut planning source windows no longer match the immutable source media");
+    for (const entry of chatcutPages(mainTimelineSnapshot).flatMap(page => page.transcript?.entries ?? [])) {
+      const clip = windows.clips.find(clip => clip.itemId === entry.itemId);
+      const sourceStart = entry.sourceRange?.start, sourceEnd = entry.sourceRange?.end;
+      const range = entry.timelineRange ?? entry.range ?? {};
+      const fromFrame = range.fromFrame ?? range.startFrame, toFrame = range.toFrame ?? range.endFrame;
+      const rate = clip && clip.playbackRateNumerator / clip.playbackRateDenominator;
+      const mapped = sourceUs => clip.timelineStartFrame + (sourceUs - clip.srcStartUs) / 1e6 * fps / rate;
+      if (!clip || !(rate > 0) || ![sourceStart, sourceEnd, fromFrame, toFrame].every(Number.isFinite)
+        || sourceEnd <= sourceStart || sourceStart < clip.srcStartUs || sourceEnd > clip.srcEndUs
+        || fromFrame < clip.timelineStartFrame || toFrame > clip.timelineStartFrame + clip.durationFrames
+        || Math.abs(mapped(sourceStart) - fromFrame) > 1 + 1e-5 || Math.abs(mapped(sourceEnd) - toFrame) > 1 + 1e-5) throw new Error("ChatCut transcript item/source/timeline range differs from its approved source-window mapping");
+    }
+    const durationFrames = mainTimelineState.durationFrames ?? firstMainPage?.durationFrames;
+    const mappedEnd = Math.max(...windows.clips.map(clip => clip.timelineStartFrame + clip.durationFrames));
+    if (!Number.isInteger(durationFrames) || Math.abs(durationFrames - mappedEnd) > 1) throw new Error("ChatCut planning snapshot duration differs from the approved source windows");
+  }
+  if (guarded && workflow.authoritativeMediaPath) {
+    const mediaPath = require_(workflow.authoritativeMediaPath);
+    if (!workflow.authoritativeMediaSha256 || sha256File(mediaPath) !== workflow.authoritativeMediaSha256) throw new Error("Locked A-roll changed before plan generation");
+    const probe = spawnSync("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", mediaPath], { encoding: "utf8" });
+    if (probe.status !== 0) throw new Error("Cannot verify locked A-roll timing with ffprobe");
+    const media = JSON.parse(probe.stdout), video = media.streams?.find(stream => stream.codec_type === "video");
+    const [numerator, denominator = 1] = String(video?.avg_frame_rate ?? "0").split("/").map(Number);
+    const duration = Number(video?.duration ?? media.format?.duration);
+    if (!Number.isFinite(duration) || Math.abs(numerator / denominator - fps) > 1e-3
+      || Math.abs(duration * fps - Number(mainTimelineState.durationFrames ?? firstMainPage?.durationFrames)) > 1 + 1e-5) throw new Error("ChatCut planning snapshot duration/frame rate differs from the locked A-roll");
+  }
+}
 // The workflow is the single source of truth; do not block plan generation on
 // a stale duplicate copied into planning-inputs.json.
 const captionMode = workflow.captionMode;
@@ -110,7 +156,24 @@ const corrections = inputs.corrections ?? {};
 const baseReleased = useMainTimeline
   ? buildMainTimelineTranscript({ snapshot: mainTimelineSnapshot, fps, corrections, revision: inputs.revision ?? 2, language: project.language ?? "zh-CN" })
   : buildReleasedTranscript({ sourceTranscript, timelineWindows, fps, corrections, revision: inputs.revision ?? 2, language: project.language ?? "zh-CN" });
-const released = !useMainTimeline && inputs.releasedTranscript ? { ...baseReleased, ...inputs.releasedTranscript } : baseReleased;
+const released = inputs.releasedTranscript ? { ...baseReleased, ...inputs.releasedTranscript } : baseReleased;
+const previousBeatMap = fs.existsSync(rel("state/beat-map.json")) ? read("state/beat-map.json") : {};
+const visualOrchestrationVersion = inputs.visualOrchestrationVersion ?? previousBeatMap.visualOrchestrationVersion
+  ?? (workflow.visualArrangementReviewRequired === true ? 2 : undefined);
+if (visualOrchestrationVersion && inputs.beats.some(beat => beat.templateId?.startsWith("stage/") || ["axis-stage-transition", "b-axis-horizon-grid"].includes(beat.templateId))) throw new Error("Stage helpers require an approved custom shared-host plan; unified visual-review generation supports the 13 content templates");
+const planningBeats = inputs.beats.map(beat => visualOrchestrationVersion && beat.templateId && beat.templateId !== "custom"
+  ? { motionProfile: "thoughtful-editorial-v1", surfaceTreatment: beat.templateId === "evidence-focus" ? "evidence-surface" : "direct-overlay", ...beat }
+  : beat);
+const beatMap = buildBeatMap({
+  transcript: released, beats: planningBeats, captionMode,
+  designSystemPath: project.designSystem ?? "state/design-system.json", designSystem, fps,
+  visualOrchestrationVersion,
+  materials: inputs.materials ?? previousBeatMap.materials ?? (visualOrchestrationVersion ? [] : undefined),
+  mgCadenceExceptions: inputs.mgCadenceExceptions ?? previousBeatMap.mgCadenceExceptions
+});
+if (beatMap.beats.some(beat => beat.templateData?.revealCues)) {
+  finalizeSpeechPlan(released, beatMap, loadSpeechTiming(jobRoot, fps), designSystem);
+}
 const captionData = inputs.captionTimingPath ? normalizeCaptionCards(read(inputs.captionTimingPath), { fps,
   timelineId, projectId: firstMainPage?.projectId }) : undefined;
 
@@ -143,14 +206,6 @@ const captionPlan = buildCaptionPlan({
 });
 
 const cues = resolveCaptionCues(captionPlan, released);
-const beatMap = buildBeatMap({
-  transcript: released,
-  beats: inputs.beats,
-  captionMode,
-  designSystemPath: project.designSystem ?? "state/design-system.json",
-  designSystem,
-  fps
-});
 for (const beat of beatMap.beats) {
   if (beat.mgScope === "local" && !beat.captionCueIds) {
     beat.captionCueIds = cues.filter((cue) => cue.end > beat.start && cue.start < beat.end).map((cue) => cue.id);
@@ -169,9 +224,10 @@ const previousReferenceOrder = existingReconciliation.referenceScript?.itemOrder
 const referenceItemOrder = [...previousReferenceOrder.filter((id) => referenceItemIds.includes(id)), ...referenceItemIds.filter((id) => !previousReferenceOrder.includes(id))];
 const cleanExportPath = project.mediaArtifacts?.roughcut?.path ?? "roughcut/a-roll.mp4";
 const sourceMediaPath = project.sourceVideo ?? "input/source.mp4";
-const fingerprintPath = fs.existsSync(rel(sourceMediaPath)) ? sourceMediaPath : cleanExportPath;
+const fingerprintPath = workflow.authoritativeMediaPath ?? (fs.existsSync(rel(cleanExportPath)) ? cleanExportPath : sourceMediaPath);
 require_(fingerprintPath);
 const mediaFingerprint = sha256File(rel(fingerprintPath));
+if (workflow.authoritativeMediaPath && workflow.authoritativeMediaSha256 !== mediaFingerprint) throw new Error("Locked A-roll changed before plan generation");
 const roughCutLocked = ["manual-approved", "automatic-fallback"].includes(workflow.roughCutReviewDecision);
 const reconciliation = {
   $schema: "../../../schemas/transcript-reconciliation.schema.json",
@@ -242,8 +298,8 @@ const creativeConfirmation = {
   },
   authorities: {},
   changeControl: {
-    implementationMayStartAfter: "rough-cut-review-approved",
-    planChangesRequireReapproval: false,
+    implementationMayStartAfter: "visual-arrangement-approved",
+    planChangesRequireReapproval: true,
     reapprovalFields: [...REAPPROVAL_FIELD_NAMES]
   },
   axisPolicy: inputs.axisPolicy ?? {
@@ -252,10 +308,10 @@ const creativeConfirmation = {
       overlayZones: designSystem.axisPolicies.A.overlayZones,
       faceProtection: designSystem.axisPolicies.A.faceCoverPolicy,
       surface: {
-        kind: "localized-glass",
+        kind: designSystem.axisPolicies.A.surface.kind ?? "direct-overlay",
         fullFrame: false,
         opacityRange: designSystem.axisPolicies.A.surface.opacityRange,
-        backdropBlurPx: inputs.backdropBlurPx ?? 14
+        backdropBlurPx: inputs.backdropBlurPx ?? designSystem.axisPolicies.A.surface.maximumBackdropBlurPx ?? 0
       }
     },
     B: {
@@ -268,7 +324,7 @@ const creativeConfirmation = {
       }
     }
   },
-  review: { status: inputs.reviewStatus ?? "ready", ...(inputs.reviewNote ? { note: inputs.reviewNote } : {}) }
+  review: { status: "ready", ...(inputs.reviewNote ? { note: inputs.reviewNote } : {}) }
 };
 
 // --------------------------------------------------------------- summary
@@ -343,8 +399,10 @@ const scaffoldFile = {
 const unchangedScaffold = (name, old) => {
   const template = scaffoldFile[name];
   if (template) return old === fs.readFileSync(path.join(scriptDirectory, "../templates/job", template), "utf8");
-  if (name === "state/transcript.json") return ["rough-cut-export", "motion-plan", "composition"].includes(workflow.currentState)
-    && (useMainTimeline || (workflow.sourceTranscriptSha256 === sha256Text(old) && workflow.sourceTranscriptSha256 === sha256File(rel("state/source-transcript.json"))));
+  if (name === "state/transcript.json") return ["rough-cut-export", "motion-plan"].includes(workflow.currentState)
+    && fs.existsSync(rel("state/source-transcript.json"))
+    && workflow.sourceTranscriptSha256 === sha256Text(old)
+    && workflow.sourceTranscriptSha256 === sha256File(rel("state/source-transcript.json"));
   if (name === "state/creative-confirmation.json") {
     const original = readJson(path.join(scriptDirectory, "../templates/job/creative-confirmation.json"));
     original.captionMode = workflow.captionMode;
@@ -365,10 +423,33 @@ try {
     if (rendered.status !== 0) throw new Error(`render-caption-review-doc failed: ${rendered.stderr.trim() || rendered.stdout.trim()}`);
     outputs.set("docs/caption-plan.md", fs.readFileSync(path.join(staging, "docs/caption-plan.md"), "utf8"));
   }
+  fs.mkdirSync(path.join(staging, "state"), { recursive: true });
+  fs.writeFileSync(path.join(staging, "state/workflow.json"), serializeJson(workflow));
+  fs.copyFileSync(rel(project.designSystem ?? "state/design-system.json"), path.join(staging, "state/design-system.json"));
+  fs.writeFileSync(path.join(staging, "state/reference-script-annotations.json"), serializeJson(annotationState));
+  for (const material of beatMap.materials ?? []) {
+    if (typeof material.path !== "string" || !material.path.startsWith("input/") || material.path.split("/").includes("..")) throw new Error(`${material.id}: material must use a contained input/ path`);
+    const source = path.resolve(jobRoot, material.path);
+    if (!source.startsWith(path.join(jobRoot, "input") + path.sep)) throw new Error(`${material.id}: material must remain inside input/`);
+    const target = path.join(staging, material.path);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.linkSync(source, target);
+  }
+  creativeConfirmation.authorities = computeCreativeAuthorities(staging, captionMode);
+  json("state/creative-confirmation.json", creativeConfirmation);
+  fs.writeFileSync(path.join(staging, "state/creative-confirmation.json"), outputs.get("state/creative-confirmation.json"));
+  if (visualOrchestrationVersion) {
+    const rendered = spawnSync(process.execPath, [path.join(scriptDirectory, "render-visual-arrangement-doc.mjs"), staging], { encoding: "utf8" });
+    if (rendered.status !== 0) throw new Error(`render-visual-arrangement-doc failed: ${rendered.stderr.trim() || rendered.stdout.trim()}`);
+    outputs.set("docs/creative-confirmation.md", fs.readFileSync(path.join(staging, "docs/creative-confirmation.md"), "utf8"));
+  }
   const previous = new Map();
   for (const [name, content] of outputs) {
     const old = fs.existsSync(rel(name)) ? fs.readFileSync(rel(name), "utf8") : null;
     previous.set(name, old);
+    if (["visual-arrangement-review", "composition", "render", "complete"].includes(workflow.currentState) && old !== content) {
+      throw new Error("Planning artifacts are under review or approved; return to motion-plan before regeneration (even with --replace-existing)");
+    }
     // Reconciliation decisions are imported above, so their manual edits survive.
     if (old !== null && old !== content && name !== "state/transcript-reconciliation.json"
       && sha256Text(old) !== managed[name] && !unchangedScaffold(name, old) && !flags.includes("--replace-existing")) {

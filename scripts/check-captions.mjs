@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveCaptionCues } from "./caption-review-utils.mjs";
-import { captionFrameWindow } from "./frame-window-utils.mjs";
+import { captionFrameWindow, frameWindowTiming } from "./frame-window-utils.mjs";
 import { assertRegularContainedFile, isPathInside, readJson, sha256File } from "./workflow-utils.mjs";
 
 const [captionsPath, pagesPath, designSystemPath, compositionPath] = process.argv.slice(2);
@@ -45,6 +45,79 @@ try {
 } catch {
   errors.push("Caption design system must be a readable regular file");
 }
+const sha256 = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
+const displayUnits = (value) => [...String(value ?? "").normalize("NFKC")].reduce((sum, character) => {
+  if (/\s/.test(character)) return sum + 0.25;
+  if (/[\u0000-\u007f]/.test(character)) return sum + 0.55;
+  if (/[，。；：！？、]/u.test(character)) return sum + 0.5;
+  return sum + 1;
+}, 0);
+
+const validateRecoveryEvidence = () => {
+  const recovery = pagesDocument.recovery;
+  if (!recovery || typeof recovery !== "object" || Array.isArray(recovery)) {
+    errors.push("recovered ChatCut timing evidence has invalid provenance");
+    return;
+  }
+  if (recovery.kind !== "reprojected-locked-chatcut-transcript" || recovery.originalViewerPageExportPresent !== false) {
+    errors.push("recovered ChatCut timing evidence has invalid provenance");
+    return;
+  }
+  const expectedPaths = {
+    transcript: "state/transcript.json",
+    roughCutRecord: "state/chatcut-roughcut.json",
+    sourceTranscript: "state/source-transcript.json",
+    roughCutSelection: "state/roughcut-selection.json",
+    media: "roughcut/a-roll.mp4"
+  };
+  const hashes = recovery.sourceHashes;
+  if (!hashes || typeof hashes !== "object" || Array.isArray(hashes)
+    || JSON.stringify(Object.keys(hashes).sort()) !== JSON.stringify(Object.keys(expectedPaths).sort())) {
+    errors.push("recovered ChatCut timing evidence lacks the complete source-hash set");
+  } else {
+    for (const [name, relativePath] of Object.entries(expectedPaths)) {
+      const record = hashes[name];
+      if (record?.path !== relativePath || !sha256(record?.sha256)) {
+        errors.push(`recovered ChatCut timing evidence has an invalid ${name} hash record`);
+        continue;
+      }
+      try {
+        if (sha256File(path.join(jobRoot, relativePath)) !== record.sha256) {
+          errors.push(`recovered ChatCut timing evidence ${name} hash is stale`);
+        }
+      } catch {
+        errors.push(`recovered ChatCut timing evidence ${name} source is unreadable`);
+      }
+    }
+  }
+  const audit = recovery.cleanExportAudit;
+  const requiredFrames = [0, 1200, 2400, 3600, 4800, 6000, 7200];
+  if (audit?.kind !== "representative-frame-audit"
+    || audit?.media?.path !== pagesDocument.cleanExport
+    || audit?.media?.sha256 !== hashes?.media?.sha256
+    || audit?.fps !== pagesDocument.fps
+    || JSON.stringify(audit?.sampledFrames) !== JSON.stringify(requiredFrames)
+    || audit?.result !== "no-visible-burned-captions"
+    || !nonempty(audit?.scope)) {
+    errors.push("recovered ChatCut timing evidence lacks its bound clean A-roll audit");
+  }
+  try {
+    const transcript = JSON.parse(fs.readFileSync(path.join(jobRoot, expectedPaths.transcript), "utf8"));
+    const selection = JSON.parse(fs.readFileSync(path.join(jobRoot, expectedPaths.roughCutSelection), "utf8"));
+    const workflow = JSON.parse(fs.readFileSync(path.join(jobRoot, "state", "workflow.json"), "utf8"));
+    if (transcript.timingAuthority?.sourceTranscript?.sha256 !== hashes?.sourceTranscript?.sha256
+      || selection.sourceTranscriptSha256 !== hashes?.sourceTranscript?.sha256
+      || selection.chatcutRoughCutSha256 !== hashes?.roughCutRecord?.sha256
+      || workflow.authoritativeMediaPath !== expectedPaths.media
+      || workflow.authoritativeMediaSha256 !== hashes?.media?.sha256) {
+      errors.push("recovered ChatCut timing evidence no longer matches its locked job authorities");
+    }
+  } catch {
+    errors.push("recovered ChatCut timing evidence cannot read its locked job authorities");
+  }
+};
+
 const normalizeCaptionText = (value) => [...String(value ?? "").normalize("NFKC").toLowerCase()]
   .filter((character) => !/[\s，。；：！？、,.!?;:'"“”‘’（）()《》〈〉—–\-]/u.test(character))
   .join("");
@@ -54,10 +127,9 @@ if (!Number.isFinite(pagesDocument.fps) || pagesDocument.fps <= 0) errors.push("
 if (captions.source?.fps !== pagesDocument.fps) errors.push("caption fps must match the locked edit timeline");
 if (captions.source?.roughCutLocked !== true) errors.push("captions require a locked ChatCut rough cut");
 if (captions.source?.captionRenderDisabled !== true || pagesDocument.captionRenderDisabled !== true) {
-  console.warn("Warning: ChatCut caption rendering is not confirmed disabled; check the final MP4 for duplicate captions.");
+  errors.push("captions require a clean export with ChatCut caption rendering disabled");
 }
-const validCleanExport = (value) => (typeof value === "boolean" && value === true)
-  || (typeof value === "string" && value.trim().length > 0);
+const validCleanExport = (value) => typeof value === "string" && value.trim().length > 0;
 if (!Object.hasOwn(captions.source, "cleanExport") || !Object.hasOwn(pagesDocument, "cleanExport")
   || !validCleanExport(captions.source.cleanExport)
   || !validCleanExport(pagesDocument.cleanExport)
@@ -194,6 +266,12 @@ if (isSourceWordEvidence) {
   }
 }
 if (pagesDocument.roughCutLocked !== true) errors.push("ChatCut timing evidence is not locked");
+if (Object.hasOwn(pagesDocument, "recovery")) validateRecoveryEvidence();
+const pageIds = new Set();
+for (const page of pagesDocument.pages ?? pagesDocument.cards ?? []) {
+  if (!nonempty(page?.id) || pageIds.has(page.id)) errors.push("ChatCut timing evidence has a missing or duplicate page ID");
+  pageIds.add(page?.id);
+}
 
 for (const [field, expected] of Object.entries(expectedStyle)) {
   if (JSON.stringify(captions.style?.[field]) !== JSON.stringify(expected)) errors.push(`Caption style ${field} must match the design system`);
@@ -225,6 +303,13 @@ for (const cue of captions.cues ?? []) {
   if (!Array.isArray(cue.lines) || cue.lines.length !== 1 || typeof cue.lines[0] !== "string"
     || !cue.lines[0].trim() || /[\r\n]/.test(cue.lines[0])) {
     errors.push(`${cue.id}: must contain exactly one rendered line`);
+  }
+  if (displayUnits(cue.lines?.[0] ?? "") > captions.style.maximumDisplayUnits) {
+    errors.push(`${cue.id}: measured line width exceeds ${captions.style.maximumDisplayUnits} display units`);
+  }
+  if (cue.fitFontSizePx !== undefined && (!Number.isFinite(cue.fitFontSizePx)
+    || cue.fitFontSizePx < captions.style.minimumFontSizePx || cue.fitFontSizePx > captions.style.fontSizePx)) {
+    errors.push(`${cue.id}: fitted caption font size is outside the design system range`);
   }
   previousEndFrame = window.endFrame;
 }
@@ -290,6 +375,10 @@ if (!reviewPlanPath || path.isAbsolute(reviewPlanRelativePath) || !isPathInside(
       if (approved.id !== rendered.id || approved.text !== rendered.lines?.[0]) errors.push(`${rendered.id}: wording differs from the approved semantic plan`);
       const expectedStartFrame = Math.max(0, Math.round(approved.start * captions.source.fps));
       const expectedEndFrame = Math.max(expectedStartFrame + 1, Math.round(approved.end * captions.source.fps));
+      if (rendered.fitFontSizePx !== approved.fitFontSizePx) errors.push(`${rendered.id}: fitted font size differs from the approved plan`);
+      if (rendered.end - rendered.start < reviewPlan.rules.minimumDurationSeconds - 1 / captions.source.fps) {
+        errors.push(`${rendered.id}: duration is below the approved minimum`);
+      }
       if (rendered.startFrame !== expectedStartFrame || rendered.endFrame !== expectedEndFrame) {
         errors.push(`${rendered.id}: timing differs from the approved semantic plan`);
       }
@@ -318,6 +407,8 @@ if (compositionPath) {
     }
     const start = Number(section.attributes.match(/data-start="([^"]+)"/)?.[1]);
     const duration = Number(section.attributes.match(/data-duration="([^"]+)"/)?.[1]);
+    const timing = frameWindowTiming(cue, captions.source.fps);
+    if (!Number.isFinite(start) || !Number.isFinite(duration) || duration <= 0 || start + duration > timing.end) errors.push(`${cue.id}: caption clip extends beyond its exclusive end frame`);
     if (Math.abs(start - cue.start) > 0.000001) errors.push(`${cue.id}: clip start does not match caption data`);
     if (Math.abs(duration - (cue.end - cue.start)) > 0.000001) errors.push(`${cue.id}: clip duration does not match caption data`);
     if (!section.attributes.includes(`data-caption-page-id="${escapeHtml(cue.sourcePageId)}"`)) errors.push(`${cue.id}: ChatCut source page is missing`);

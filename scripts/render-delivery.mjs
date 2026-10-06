@@ -62,7 +62,6 @@ const findCachedHeadlessShell = () => {
 };
 
 const resolveBrowserPath = (mode) => {
-  if (!isMacArm || mode !== "chunked") return null;
   const configuredPath = process.env.HYPERFRAMES_BROWSER_PATH ?? process.env.PRODUCER_HEADLESS_SHELL_PATH;
   if (configuredPath) {
     if (!isExecutableFile(configuredPath)) {
@@ -70,6 +69,7 @@ const resolveBrowserPath = (mode) => {
     }
     return configuredPath;
   }
+  if (!isMacArm) return null;
   const cached = findCachedHeadlessShell();
   if (cached) return cached;
   throw new Error(

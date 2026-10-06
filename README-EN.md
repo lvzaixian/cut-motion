@@ -4,11 +4,11 @@
 
 cut-motion is an open Agent workflow that turns a talking-head recording into a tightly edited, captioned, motion-designed video.
 
+This maintained branch integrates upstream `41baefb` while retaining the local four-decision workflow, cover and five-platform title delivery, recording-backed wording and controlled motion. See [the integration guide](docs/upstream-integration.md) for unified planning, semantic templates, measured keyword timing, waveform proposals and render reuse.
+
 ## How to use it
 
-You do not need to learn video-editing software, code, or terminal commands. Open this repository in the ChatGPT desktop app's Work or Codex tab, Claude Code, or WorkBuddy and describe what you want in natural language. The workflow requires the ChatCut Agent integration; on first use, follow the [environment guide](docs/agent-setup.md#environment-preflight) for your client.
-
-ChatCut currently publishes setup guides for these three clients. Its ChatGPT guide covers the desktop app's Work and Codex tabs; it does not cover ChatGPT website sessions or remote workspaces.
+You do not need to learn video-editing software, code, or terminal commands. Open this repository in Codex, Claude Code, or a similar coding Agent and describe what you want in natural language.
 
 For example:
 
@@ -17,23 +17,23 @@ Use cut-motion to edit this video:
 /Users/your-name/Desktop/video.mov
 ```
 
-The Agent checks the local environment first. Pinned HyperFrames and GSAP packages are reused from, or installed into, the repository's Git-ignored `node_modules/` directory. The Agent asks before installing global/system dependencies, changing global Agent settings, or authenticating.
+The Agent checks the local environment first. If anything needs to be installed or authenticated, it explains why and asks for your permission before continuing.
 
 ## What happens next
 
-1. You provide the local path to the talking-head video.
-2. The Agent transcribes it, removes mistakes, repeated takes, reading pauses, and unnecessary dead air.
-3. You review the rough cut in ChatCut and approve it or request revisions.
-4. After rough-cut approval, the Agent starts the clean A-roll export and prepares the caption, motion, and overall-style plans in parallel. In Review mode, you review the three plans together before production continues.
-5. After you approve the plans, the Agent assembles and renders the final video, then gives you the file location. Auto mode continues after plan generation only when you explicitly selected it.
-6. If you request changes after seeing the final video, the Agent revises the affected parts.
+1. You provide the local recording; the Agent checks media and records preferences.
+2. The Agent transcribes the full recording with ChatCut or the existing local mlx-whisper tool, reconciles wording, and maps the narrative, setup dependencies and repeated takes before editing—even when a script exists.
+3. With the content understood, you select one of 24 source frames and then one of six complete standalone cover options.
+4. ChatCut builds the editable rough cut around the narrative. Repeated attempts use the last complete take by default; meaningful setup and emphasis remain. You review the timeline, pacing and playback speed.
+5. In default review mode, you approve the planned captions, supporting assets and motion before HyperFrames composition and rendering.
+6. You receive the cover, final video and five-platform title workbook for inspection. Later revisions target the affected parts; automatic checks require explicit auto mode and do not substitute for creative approval or authorize publishing.
 
 ## Two caption styles
 
 - **With subtitles** — the default. Spoken content appears as readable captions, with animation added only where it improves understanding.
 - **Without subtitles** — spoken phrases become part of the motion design instead of appearing in a separate subtitle band.
 
-You do not need to choose in advance. If you have no preference, the Agent uses the job defaults without an extra confirmation round.
+You do not need to choose in advance. If you have no preference, the Agent recommends a suitable mode after reviewing the footage.
 
 ## What you can provide
 

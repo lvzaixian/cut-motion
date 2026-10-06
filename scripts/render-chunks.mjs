@@ -89,7 +89,7 @@ const cachePaths = (jobRoot, quality, cacheKey) => {
   };
 };
 
-export const validateCacheReceipt = (jobRootInput, quality, chunk) => {
+export const validateCacheReceipt = (jobRootInput, quality, chunk, renderer = null) => {
   const jobRoot = path.resolve(jobRootInput);
   const paths = cachePaths(jobRoot, quality, chunk.cacheKey);
   if (!fs.existsSync(paths.artifactPath) || !fs.existsSync(paths.receiptPath)) return null;
@@ -105,6 +105,8 @@ export const validateCacheReceipt = (jobRootInput, quality, chunk) => {
       || receipt.quality !== quality
       || receipt.frameCount !== expectedFrames
       || receipt.chunkDependencySha256 !== chunk.dependencySha256) return null;
+    if (renderer && (receipt.rendererFingerprint !== renderer.fingerprint
+      || JSON.stringify(receipt.rendererEnvironment) !== JSON.stringify(renderer.environment))) return null;
     if (receipt.artifactSha256 !== sha256File(paths.artifactPath)) return null;
     if (!receipt.streamSignature) return null;
     const probe = {
@@ -120,11 +122,13 @@ export const validateCacheReceipt = (jobRootInput, quality, chunk) => {
   }
 };
 
-const writeCacheReceipt = (paths, quality, chunk, probe) => {
+const writeCacheReceipt = (paths, quality, chunk, probe, renderer) => {
   const receipt = {
     schemaVersion: "2.0.0",
     cacheKey: chunk.cacheKey,
     quality,
+    rendererFingerprint: renderer.fingerprint,
+    rendererEnvironment: renderer.environment,
     chunkDependencySha256: chunk.dependencySha256,
     artifactSha256: sha256File(paths.artifactPath),
     frameCount: probe.actualFrames,
@@ -178,16 +182,6 @@ const assertFullOutputProbe = (manifest, probe, label) => {
   }
 };
 
-const assertBasicOutputProbe = (manifest, probe, label) => {
-  const fps = numericRate(probe.streamSignature?.fps);
-  if (probe.width !== manifest.width || probe.height !== manifest.height) throw new Error(`${label} dimensions differ from Render Manifest`);
-  if (!Number.isFinite(fps) || Math.abs(fps - manifest.fps) > 0.001) throw new Error(`${label} FPS differs from Render Manifest`);
-  if (probe.audioStreamCount < 1) throw new Error(`${label} has no audio stream`);
-  if (!Number.isFinite(probe.duration) || Math.abs(probe.duration - manifest.duration) > 1 / manifest.fps) {
-    throw new Error(`${label} duration differs from Render Manifest`);
-  }
-};
-
 function assertCurrentManifest(jobRoot, manifest, mode = manifest.chunks?.length ? "chunked" : "monolithic") {
   const current = deriveRenderManifest(jobRoot, {
     mode,
@@ -199,7 +193,7 @@ function assertCurrentManifest(jobRoot, manifest, mode = manifest.chunks?.length
 }
 
 const renderChunk = (jobRoot, manifest, chunk, quality, binary) => {
-  const existing = validateCacheReceipt(jobRoot, quality, chunk);
+  const existing = validateCacheReceipt(jobRoot, quality, chunk, manifest.renderer);
   if (existing) return { ...existing, reused: true };
   const paths = cachePaths(jobRoot, quality, chunk.cacheKey);
   fs.mkdirSync(paths.directory, { recursive: true });
@@ -226,9 +220,10 @@ const renderChunk = (jobRoot, manifest, chunk, quality, binary) => {
     normalizeChunkFrameBoundary(temporaryPath, chunk.endFrame - chunk.startFrame, manifest.fps);
     const probe = probeVideoArtifact(temporaryPath);
     assertChunkProbe(manifest, chunk, probe);
+    assertCurrentManifest(jobRoot, manifest);
     fs.renameSync(temporaryPath, paths.artifactPath);
     promoted = true;
-    const receipt = writeCacheReceipt(paths, quality, chunk, probe);
+    const receipt = writeCacheReceipt(paths, quality, chunk, probe, manifest.renderer);
     return { ...paths, receipt, probe, reused: false };
   } catch (error) {
     if (promoted) {
@@ -273,7 +268,7 @@ const resolveLocalMediaPath = (jobRootInput, sourceValue) => {
   } catch {
     return null;
   }
-  const sourcePath = path.resolve(path.join(jobRoot, "hyperframes"), decodedSource);
+  const sourcePath = path.resolve(path.join(jobRoot, "hyperframes"), decodedSource.startsWith("/") ? `.${decodedSource}` : decodedSource);
   if (!isPathInside(jobRoot, sourcePath) || !fs.existsSync(sourcePath)) return null;
   const realPath = fs.realpathSync(sourcePath);
   if (!isPathInside(fs.realpathSync(jobRoot), realPath) || !fs.statSync(realPath).isFile()) return null;
@@ -293,13 +288,15 @@ const postMixAudioTag = (jobRoot, tag) => {
   const fadeOutDuration = attributes["data-fade-out-duration"] == null
     ? null : Number(attributes["data-fade-out-duration"]);
   const playbackRate = attributes["data-playback-rate"] ?? attributes.playbackrate;
-  if (!sourcePath || !Number.isFinite(start) || start < 0
+  if (!sourcePath || attributes["data-var-src"] != null || !Number.isFinite(start) || start < 0
     || !Number.isFinite(duration) || duration <= 0
     || !Number.isFinite(mediaStart) || mediaStart < 0
     || !Number.isFinite(volume) || volume < 0 || volume > 1
     || (playbackRate != null && Number(playbackRate) !== 1)
     || (fadeOutStart != null && (!Number.isFinite(fadeOutStart) || fadeOutStart < start))
-    || (fadeOutDuration != null && (!Number.isFinite(fadeOutDuration) || fadeOutDuration <= 0))) {
+    || (fadeOutDuration != null && (!Number.isFinite(fadeOutDuration) || fadeOutDuration <= 0))
+    || ((fadeOutStart == null) !== (fadeOutDuration == null))
+    || (fadeOutStart != null && fadeOutStart + fadeOutDuration > start + duration + 1e-6)) {
     throw new Error("Invalid post-mix audio tag");
   }
   return { sourcePath, start, duration, mediaStart, volume, fadeOutStart, fadeOutDuration };
@@ -339,7 +336,10 @@ export const singlePassAudioSupported = (jobRoot, manifest) => {
     return false;
   }
   try {
-    for (const tag of postMixTags) postMixAudioTag(jobRoot, tag);
+    for (const tag of postMixTags) {
+      const item = postMixAudioTag(jobRoot, tag);
+      if (item.start + item.duration > manifest.duration + 1e-6) return false;
+    }
   } catch {
     return false;
   }
@@ -350,6 +350,7 @@ export const singlePassAudioSupported = (jobRoot, manifest) => {
 const assemblyReceiptPath = (outputPath) => `${outputPath}.render.json`;
 export const promoteRenderedCandidate = (jobRoot, manifest, candidatePath, outputPath, { mode } = {}) => {
   assertCurrentManifest(jobRoot, manifest, mode);
+  assertDeliveryOutputSafe(jobRoot, outputPath);
   fs.renameSync(candidatePath, outputPath);
 };
 
@@ -362,6 +363,9 @@ export const pinRenderedArtifacts = (workDirectory, rendered) => rendered.map((i
   }
   const pinnedPath = path.join(workDirectory, `chunk-${String(index + 1).padStart(4, "0")}.mp4`);
   fs.linkSync(item.artifactPath, pinnedPath);
+  if (sha256File(pinnedPath) !== item.receipt.artifactSha256) {
+    throw new Error("Chunk cache changed while being pinned for assembly");
+  }
   return { ...item, pinnedPath };
 });
 
@@ -455,6 +459,8 @@ export const assembleChunks = (jobRoot, manifest, quality, rendered, outputPath)
       schemaVersion: "2.0.0",
       quality,
       mode: "chunked",
+      rendererFingerprint: manifest.renderer.fingerprint,
+      rendererEnvironment: manifest.renderer.environment,
       artifactSha256: sha256File(outputPath),
       contentManifestSha256: manifest.contentManifestSha256,
       totalFrames: manifest.totalFrames,
@@ -492,7 +498,9 @@ export const verifyAssemblyReceipt = (
     "artifactSha256",
     "contentManifestSha256",
     "totalFrames",
-    "streamSignature"
+    "streamSignature",
+    "rendererFingerprint",
+    "rendererEnvironment"
   ]);
   if (receipt.schemaVersion !== "2.0.0"
     || Object.keys(receipt).some((key) => !allowedKeys.has(key))
@@ -503,6 +511,10 @@ export const verifyAssemblyReceipt = (
   if (quality && receipt.quality !== quality) throw new Error(`Expected ${quality} render receipt`);
   if (receipt.contentManifestSha256 !== expectedContentSha256) {
     throw new Error("Chunk assembly content differs from the current Render Manifest");
+  }
+  if (manifest.renderer && (receipt.rendererFingerprint !== manifest.renderer.fingerprint
+    || JSON.stringify(receipt.rendererEnvironment) !== JSON.stringify(manifest.renderer.environment))) {
+    throw new Error("Render receipt renderer environment is stale");
   }
   if (!["chunked", "monolithic"].includes(receipt.mode)
     || !Number.isInteger(receipt.totalFrames)
@@ -524,7 +536,6 @@ const renderMonolithic = (
   outputPath,
   binary,
   manifest,
-  workflow,
   reason,
   { mode = "monolithic" } = {}
 ) => {
@@ -545,26 +556,23 @@ const renderMonolithic = (
       ...hyperframesWorkerArguments(),
       "."
     ], { cwd: path.join(jobRoot, "hyperframes"), stdio: "inherit", label: `HyperFrames ${quality} monolithic render` });
-    const fullAudit = workflow.mode === "auto" || workflow.roughCutReviewDecision === "automatic-fallback";
-    const detailedProbe = fullAudit || mode === "chunked";
-    const probe = probeVideoArtifact(temporaryPath, { detailed: detailedProbe });
-    if (detailedProbe) assertFullOutputProbe(manifest, probe, "Monolithic render");
-    else assertBasicOutputProbe(manifest, probe, "Monolithic render");
+    assertCurrentManifest(jobRoot, manifest, mode);
+    const probe = probeVideoArtifact(temporaryPath);
+    assertFullOutputProbe(manifest, probe, "Monolithic render");
     promoteRenderedCandidate(jobRoot, manifest, temporaryPath, outputPath, { mode });
-    let receipt = null;
-    if (detailedProbe) {
-      receipt = {
-        schemaVersion: "2.0.0",
-        quality,
-        mode: "monolithic",
-        reason,
-        artifactSha256: sha256File(outputPath),
-        contentManifestSha256: manifest.contentManifestSha256,
-        totalFrames: manifest.totalFrames,
-        streamSignature: probe.streamSignature
-      };
-      writeJsonAtomic(assemblyReceiptPath(outputPath), receipt);
-    }
+    const receipt = {
+      schemaVersion: "2.0.0",
+      quality,
+      mode: "monolithic",
+      reason,
+      rendererFingerprint: manifest.renderer.fingerprint,
+      rendererEnvironment: manifest.renderer.environment,
+      artifactSha256: sha256File(outputPath),
+      contentManifestSha256: manifest.contentManifestSha256,
+      totalFrames: manifest.totalFrames,
+      streamSignature: probe.streamSignature
+    };
+    writeJsonAtomic(assemblyReceiptPath(outputPath), receipt);
     return { mode: "monolithic", outputPath, manifest, receipt, reason };
   } finally {
     if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
@@ -580,6 +588,15 @@ const validateRenderOutputPath = (jobRoot, quality, outputPath) => {
   if (fs.lstatSync(outputDirectory).isSymbolicLink()
     || !isPathInside(fs.realpathSync(jobRoot), fs.realpathSync(outputDirectory))) {
     throw new Error("Render output directory must be a real directory inside the job");
+  }
+};
+
+const assertDeliveryOutputSafe = (jobRoot, outputPath) => {
+  const workflow = readJson(path.join(jobRoot, "state", "workflow.json"));
+  const lastGoodPath = workflow.lastKnownGoodDelivery?.path;
+  if (fs.existsSync(outputPath) && (path.resolve(outputPath) === path.join(jobRoot, "output", "final.mp4")
+    || (lastGoodPath && path.resolve(outputPath) === path.resolve(jobRoot, lastGoodPath)))) {
+    throw new Error("An existing final.mp4 must be preserved; render this revision to output/final.candidate.mp4");
   }
 };
 
@@ -599,7 +616,6 @@ export const prepareRender = (jobRootInput, quality, outputPathInput, requestedM
   const outputPath = path.resolve(outputPathInput);
   validateRenderOutputPath(jobRoot, quality, outputPath);
   const binary = resolveLockedHyperframesCli(jobRoot).binaryPath;
-  const workflow = readJson(path.join(jobRoot, "state", "workflow.json"));
   const templatePath = path.join(jobRoot, "hyperframes", "index.template.html");
   if (!fs.existsSync(templatePath)) throw new Error("Render requires hyperframes/index.template.html");
 
@@ -614,16 +630,15 @@ export const prepareRender = (jobRootInput, quality, outputPathInput, requestedM
     jobRoot,
     outputPath,
     binary,
-    workflow,
     manifest,
     quality,
     renderMode
   };
 };
 
-const renderPreparedChunked = ({ jobRoot, outputPath, binary, workflow, manifest, quality }) => {
+const renderPreparedChunked = ({ jobRoot, outputPath, binary, manifest, quality }) => {
   if (!singlePassAudioSupported(jobRoot, manifest)) {
-    return renderMonolithic(jobRoot, quality, outputPath, binary, manifest, workflow, "non-pass-through-audio-graph", {
+    return renderMonolithic(jobRoot, quality, outputPath, binary, manifest, "non-pass-through-audio-graph", {
       mode: "chunked"
     });
   }
@@ -650,13 +665,12 @@ const renderPreparedChunked = ({ jobRoot, outputPath, binary, workflow, manifest
 
 export const renderChunkedOutput = (jobRootInput, quality, outputPathInput) => {
   const prepared = prepareRender(jobRootInput, quality, outputPathInput, "chunked");
+  assertDeliveryOutputSafe(prepared.jobRoot, prepared.outputPath);
   return renderPreparedChunked(prepared);
 };
 
 export const renderOutput = (jobRootInput, quality, outputPathInput, { mode = "auto" } = {}) => {
   const prepared = prepareRender(jobRootInput, quality, outputPathInput, mode);
-  // Reuse only an existing success record whose media and current inputs match.
-  // Ordinary Review renders still produce no additional record or audit step.
   if (fs.existsSync(assemblyReceiptPath(prepared.outputPath))) {
     try {
       const receipt = verifyAssemblyReceipt(prepared.jobRoot, path.relative(prepared.jobRoot, prepared.outputPath), {
@@ -665,9 +679,10 @@ export const renderOutput = (jobRootInput, quality, outputPathInput, { mode = "a
       });
       return { mode: receipt.mode, outputPath: prepared.outputPath, manifest: prepared.manifest, receipt, reused: true };
     } catch {
-      // A stale or incomplete result is rendered through the normal route.
+      // Stale outputs are rendered as candidates; final.mp4 is guarded below.
     }
   }
+  assertDeliveryOutputSafe(prepared.jobRoot, prepared.outputPath);
   if (prepared.renderMode === "monolithic") {
     return renderMonolithic(
       prepared.jobRoot,
@@ -675,7 +690,6 @@ export const renderOutput = (jobRootInput, quality, outputPathInput, { mode = "a
       prepared.outputPath,
       prepared.binary,
       prepared.manifest,
-      prepared.workflow,
       "default-monolithic",
       { mode: "monolithic" }
     );

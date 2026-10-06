@@ -32,6 +32,11 @@ assert.throws(() => normalizeCaptionCards([response, response], { fps: 30 }), /r
 assert.throws(() => normalizeCaptionCards(response, { fps: 30, projectId: "other" }), /project/);
 const second = { cards: [{ id: "cue:c", startFrame: 60, endFrame: 90, text: "音频", words: [] }], hasMore: false };
 assert.equal(normalizeCaptionCards([{ ...response.structuredContent, hasMore: true }, second], { fps: 30 }).cards.length, 3);
+for (const wrappedPages of [
+  { structuredContent: [{ ...response.structuredContent, hasMore: true }, second] },
+  { content: [{ type: "text", text: JSON.stringify([{ ...response.structuredContent, hasMore: true }, second]) }] },
+  { text: JSON.stringify([{ ...response.structuredContent, hasMore: true }, second]) }
+]) assert.equal(normalizeCaptionCards(wrappedPages, { fps: 30 }).cards.length, 3, "wrapped page arrays remain distinct ordered pages");
 
 const snapshot = { projectId: "project", state: { id: "timeline", fps: 30, durationFrames: 60 }, transcript: {
   coverage: "complete", entries: [{ itemId: "item", text: "扣 d ex 文案画面", sourceRange: { start: 0, end: 2000000 },

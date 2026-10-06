@@ -1,11 +1,31 @@
-const decimal = (value) => Number(Number(value).toFixed(6));
+import { durationToFrames } from "./frame-window-utils.mjs";
 
-export const transcriptWordsById = (transcript) => new Map(
-  (transcript.segments ?? []).flatMap((segment) => (segment.words ?? []).map((word, index) => [
+const decimal = (value) => Number(Number(value).toFixed(6));
+export const THOUGHTFUL_EDITORIAL_PROFILE = "thoughtful-editorial-v1";
+
+export const transcriptWordsById = (transcript) => {
+  const segments = new Map((transcript.segments ?? []).map((segment) => [segment.id, segment]));
+  const words = new Map((transcript.segments ?? []).flatMap((segment) => (segment.words ?? []).map((word, index) => [
     `${segment.id}:word-${String(index + 1).padStart(3, "0")}`,
     word
-  ]))
-);
+  ])));
+  if (transcript.timingAnchors !== undefined && !Array.isArray(transcript.timingAnchors)) {
+    throw new Error("Transcript timingAnchors must be an array");
+  }
+  for (const anchor of transcript.timingAnchors ?? []) {
+    const match = /^(.+):measured-word-\d{3,}$/.exec(anchor?.id ?? "");
+    const segment = match && segments.get(match[1]);
+    if (!segment || words.has(anchor.id)) throw new Error(`Invalid or duplicate measured timing anchor: ${anchor?.id}`);
+    if (anchor.timingProvenance !== "measured" || typeof anchor.text !== "string" || !anchor.text.trim()
+      || !Number.isFinite(anchor.start) || !Number.isFinite(anchor.end) || anchor.start < 0 || anchor.end <= anchor.start
+      || (Number.isFinite(segment.start) && anchor.start < segment.start - 1e-6)
+      || (Number.isFinite(segment.end) && anchor.end > segment.end + 1e-6)) {
+      throw new Error(`${anchor.id}: timing anchor requires measured text and a positive window within its segment`);
+    }
+    words.set(anchor.id, anchor);
+  }
+  return words;
+};
 
 export const resolveBeatRenderWindow = (beat, beatMap, wordsById) => {
   const fps = Number(beatMap.fps);
@@ -16,7 +36,31 @@ export const resolveBeatRenderWindow = (beat, beatMap, wordsById) => {
   if (!Number.isFinite(fps) || fps <= 0) throw new Error(`${beat.id}: Beat Map fps must be positive`);
   if (!Number.isFinite(fullDuration) || fullDuration <= 0) throw new Error(`${beat.id}: Beat Map duration must be positive`);
   if (!Number.isFinite(start) || start < 0) throw new Error(`${beat.id}: Beat start must be non-negative`);
-  if (!entryWord || !exitWord) throw new Error(`${beat.id}: use entry and exit timing units from the generated transcript; routine ChatCut plans use main-timeline entry units`);
+  if (!entryWord || !exitWord) throw new Error(`${beat.id}: entry and exit anchors must resolve`);
+  if (beat.motionProfile === THOUGHTFUL_EDITORIAL_PROFILE) {
+    const cues = beat.objectCues ?? [];
+    if (!Array.isArray(cues) || cues.length === 0) {
+      throw new Error(`${beat.id}: thoughtful-editorial-v1 requires object cues`);
+    }
+    const frames = cues.flatMap((cue) => [cue?.preMotionFrame, cue?.invisibleFrame]);
+    if (frames.some((frame) => !Number.isInteger(frame) || frame < 0)) {
+      throw new Error(`${beat.id}: thoughtful-editorial-v1 cues require non-negative integer frame windows`);
+    }
+    const startFrame = Math.min(...cues.map((cue) => cue.preMotionFrame));
+    const endFrame = Math.max(...cues.map((cue) => cue.invisibleFrame));
+    if (endFrame <= startFrame || endFrame > durationToFrames(fullDuration, fps)) {
+      throw new Error(`${beat.id}: thoughtful-editorial-v1 cue render window is invalid`);
+    }
+    return {
+      start: decimal(startFrame / fps),
+      end: decimal(endFrame / fps),
+      entryAnchorTime: decimal(startFrame / fps),
+      exitAnchorTime: decimal(endFrame / fps),
+      exitStartTime: decimal(endFrame / fps),
+      exitDuration: 0,
+      unclampedEnd: decimal(endFrame / fps)
+    };
+  }
   if (!Number.isInteger(beat.exitAnchorOffsetFrames) || beat.exitAnchorOffsetFrames < 0) {
     throw new Error(`${beat.id}: exitAnchorOffsetFrames must be a non-negative integer`);
   }

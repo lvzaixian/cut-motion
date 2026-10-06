@@ -2,42 +2,39 @@
 
 ## Motion-copy mode
 
-Every spoken phrase appears as motion typography. There is no separate caption layer, and the beat map must cover every transcript segment exactly. Plan the visual treatment for the current job; the repository has no complete motion-copy reference composition.
+This is the high-density style used by the gold-standard video. Every spoken phrase appears as motion typography. There is no additional caption layer. The beat map must cover every transcript segment exactly.
 
 ## Subtitles mode
 
-This is the default release path. Captions carry the complete reconciled spoken content. ChatCut viewer pages provide raw timing evidence; `captions/caption-review-plan.json` is the approved wording, grouping, and boundary authority, but it is a semantic draft rather than an installable caption file. Promote it to `captions/captions.json` before checking or installing released captions.
+This is the default release path. Captions carry the complete reconciled spoken content. ChatCut viewer pages provide raw timing evidence; `captions/caption-review-plan.json` is the approved wording, grouping, and boundary authority.
 
 Default 1080×1920 caption treatment:
 
-- 得意黑, embedded when available, with the sans-serif fallback used otherwise;
+- 得意黑, locally embedded;
 - white `#FFFFFF`;
 - 96 px;
 - line height 1.15;
 - centered;
 - 330 px above the bottom edge;
 - soft black shadow offset downward;
-- exactly one rendered line; keep each line to at most 10 display units, counting one Chinese character as 1 and about 3 English characters as 1;
+- exactly one rendered line; target 4–10.5 measured display units and allow up to 11.8 only with the approved 88–96px cue-level fit range;
 - lexical units and fixed phrases are protected; particles and conjunctions may not stand alone;
 - target one short clause or breath per cue, normally 0.8–2.5 seconds and never below 0.5 seconds;
 - no opaque subtitle bar.
 
-For normal production use the combined assembly entry point after generating the plan:
+Use this sequence:
 
 ```bash
-node scripts/compose-job.mjs jobs/<job-id>
+node scripts/check-caption-review-plan.mjs jobs/<job-id>/captions/caption-review-plan.json
+node scripts/promote-caption-review-plan.mjs jobs/<job-id>
+node scripts/check-captions.mjs jobs/<job-id>/captions/captions.json jobs/<job-id>/captions/chatcut-pages.json jobs/<job-id>/state/design-system.json
+node scripts/install-captions.mjs jobs/<job-id>/captions/captions.json jobs/<job-id>/hyperframes/index.html jobs/<job-id>/state/design-system.json
 ```
 
-Promotion checks the approved semantic plan and the exact generated caption file before replacing `captions/captions.json`. Run the standalone checkers only for early feedback, after changing a promoted file, or during an explicit audit.
+Before promotion, lock the ChatCut rough cut, reconcile wording against the recording, author semantic one-line cues, and approve them in the creative package. Disable ChatCut caption rendering before exporting clean A-roll. The installer uses only the approved promoted cues and replaces prior generated clips idempotently.
 
-The generator marks settled cue plans `approved` by default; use `captionStatus: proposed` only for an intentional draft. This records Agent preparation, not user approval. Promotion checks transcript freshness, wording coverage, protected terms, timing and renderer-compatible cues. ChatCut caption-rendering status is recorded when known; an unknown status warns but does not block. Disable ChatCut caption rendering for clean A-roll when available; inspect the delivered video for duplicate captions if status was unknown. Auto uses the same caption checks and has no extra creative-authority gate. The combined command installs the promoted cues after MG assembly and builds once.
+Caption-only HyperFrames is the first publishable result. Only add MG when a selected semantic node closes a viewer cognition gap; place it in the most legible feed-scale focal position rather than mechanically pushing core information to the top or bottom to avoid the face. It must remain local, brief, supplemental, and outside active captions, PiP, evidence, protected UI, and platform chrome. The speaker is not a default protected zone: intentional face coverage is allowed when it improves current semantic understanding. Inspect entrance, peak, hold, and exit at real feed scale, and retain one dominant focal group. Keep the talking-head video full-frame beneath MG by default. A full-screen MG stage with speaker PiP requires explicit user approval. Never add a global MG treatment in this mode.
 
-Caption-only HyperFrames is the composition baseline, not a required separate export or approval. Only add MG when a selected semantic node has room outside the caption, face, PiP, and evidence regions; it must be local, brief, and supplemental. Keep the talking-head video full-frame beneath MG by default. A full-screen MG stage with speaker PiP follows the saved axis preference, defaulting to A-axis overlay when unspecified. It adds no approval gate. Never add a global MG treatment in this mode.
+Creative confirmation calls these treatments **A-axis overlay mode** and **B-axis stage mode**, defines both for the user, and records any B-axis or hybrid choice before approval.
 
-Creative confirmation calls these treatments **A-axis overlay mode** and **B-axis stage mode** and defines the selected treatment. An omitted preference uses the saved default; do not request a separate confirmation.
-
-Use `docs/subtitle-mg-standard.md` for selection and placement. One concise `intent` explains the MG's use; duplicate written justifications are unnecessary.
-
-### Default subtitle-led treatment
-
-Use `recipes/traework-subtitles.json` and the reusable motion templates as the default visual treatment for subtitle-led talking-head work. The talking head remains full-frame on the A-axis, captions carry the complete wording, real evidence is shown at its original aspect ratio, and B-axis staging is reserved for a coherent demonstration range with a protected moving speaker window.
+`docs/subtitle-mg-standard.md` is the binding selection rule. A local MG must close a documented viewer cognition gap; merely adding a new fact, technical term, visual stimulus, or subtitle paraphrase is insufficient.

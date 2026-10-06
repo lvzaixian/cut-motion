@@ -109,7 +109,11 @@ if (!options.url) {
 }
 let endpoint;
 try { endpoint = new URL(options.url); } catch { usage(); process.exit(64); }
-if (!['https:', 'http:'].includes(endpoint.protocol) || endpoint.username || endpoint.password) { usage(); process.exit(64); }
+const loopback = endpoint.hostname === "localhost" || endpoint.hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(endpoint.hostname);
+if ((endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && loopback)) || endpoint.username || endpoint.password) {
+  console.error("ChatCut HTTP diagnosis requires HTTPS, except for a loopback endpoint");
+  process.exit(64);
+}
 if (!options.token) {
   console.error(`missing  chatcut — ${endpoint.host} has no bearer token for this HTTP probe`);
   console.error(`         ${REMEDIES.token}`);

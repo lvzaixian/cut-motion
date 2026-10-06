@@ -64,8 +64,22 @@ if (command === "transcript") {
   console.log(`Imported ${words.length} source words for planning.`);
 } else {
   const first = pages[0];
+  const workflow = readJson(state("workflow.json"));
+  if (["visual-arrangement-review", "composition", "render", "complete"].includes(workflow.currentState)) {
+    throw new Error("Reopen rough-cut before changing source windows or computing a new cut plan for an approved visual package");
+  }
+  const recordPath = state("chatcut-roughcut.json");
+  const record = fs.existsSync(recordPath) ? readJson(recordPath) : null;
+  if (record && (record.projectId !== first?.projectId
+    || !(record.timelineIds ?? []).includes(first?.state?.id)
+    || (record.activeTimelineId && record.activeTimelineId !== first?.state?.id))) {
+    throw new Error("Timeline snapshot does not match this job's recorded ChatCut project and active timeline");
+  }
   const fps = first?.state?.fps;
   if (!Number.isFinite(fps) || fps <= 0 || (command === "tighten" && !Number.isSafeInteger(fps))) throw new Error("Tightening requires an integer timeline fps; source windows require a positive timeline fps");
+  const fpsDenominator = Number.isSafeInteger(fps) ? 1 : 1_000_000;
+  const fpsNumerator = Math.round(fps * fpsDenominator);
+  if (!Number.isSafeInteger(fpsNumerator) || fpsNumerator < 1) throw new Error("Timeline FPS cannot be represented safely");
   const total = first?.timeline?.totalEntries;
   if (!Number.isSafeInteger(total) || total < 1) throw new Error("Save the structured preview_timeline response, including totalEntries");
   const entries = new Map();
@@ -79,6 +93,12 @@ if (command === "transcript") {
   if (entries.size !== total) throw new Error(`Missing timeline pages: received ${entries.size}/${total} entries`);
   const clips = [...entries.values()].sort((a, b) => a.timelineRange?.fromFrame - b.timelineRange?.fromFrame);
   if (new Set(clips.map((e) => e.asset?.id)).size !== 1 || new Set(clips.map((e) => e.trackId)).size !== 1) throw new Error("Use one source video track for this adapter");
+  if (record?.sourceAssetId && record.sourceAssetId !== clips[0]?.asset?.id) throw new Error("Timeline source asset differs from the recorded rough cut");
+  for (let index = 1; index < clips.length; index += 1) {
+    if (clips[index].timelineRange?.fromFrame !== clips[index - 1].timelineRange?.toFrame) {
+      throw new Error("Source windows require a contiguous single video track without gaps or overlaps");
+    }
+  }
   const indexPath = state("source-audio-waveform-index.json");
   const sourceHash = sha256File(source);
   let index = fs.existsSync(indexPath) ? readJson(indexPath) : null;
@@ -93,7 +113,8 @@ if (command === "transcript") {
     if (probe.error || probe.status !== 0 || !(sourceDurationUs > 0)) throw new Error("Cannot read source duration for the approved timeline mapping");
   }
   const manifest = { schemaVersion: 1, sourceSha256: sourceHash, sourceDurationUs,
-    sourceAssetId: clips[0].asset.id, timelineFps: { numerator: fps, denominator: 1 },
+    projectId: first.projectId, timelineId: first.state.id,
+    sourceAssetId: clips[0].asset.id, timelineFps: { numerator: fpsNumerator, denominator: fpsDenominator },
     clips: clips.map((e) => {
       if (e.itemType !== "video" || !e.id || !e.asset?.id) throw new Error("Unsupported timeline entry");
       const rate = e.playbackRate ?? 1;

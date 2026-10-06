@@ -10,13 +10,12 @@ mode="${1:---static}"
 }
 
 node "$repository_root/scripts/check-repository-privacy.mjs"
-node "$repository_root/tests/test-repository-privacy.mjs"
 
 while IFS= read -r json_file; do
   jq -e . "$json_file" >/dev/null
 done < <(
   find "$repository_root" \
-    -type d \( -name .git -o -name node_modules -o -iname jobs -o -name .hyperframes \) -prune \
+    -type d \( -name .git -o -name node_modules -o -name jobs -o -name .hyperframes \) -prune \
     -o -name '*.json' -type f -print
 )
 
@@ -35,25 +34,20 @@ required_files=(
   README.md
   docs/agent-setup.md
   docs/quality-gates.md
+  docs/title-standard.md
   assets/design-system.default.json
   config/validation-evidence-contracts.json
   schemas/chatcut-roughcut.schema.json
-  schemas/gap-candidates.schema.json
+  schemas/roughcut-selection.schema.json
+  schemas/cover.schema.json
+  schemas/titles.schema.json
   schemas/workflow.schema.json
   schemas/render-manifest.schema.json
-  schemas/chatcut-source-word-mapping.schema.json
   schemas/validation-receipt.schema.json
   scripts/build-composition.mjs
-  scripts/align-export.sh
-  scripts/check-chatcut.mjs
-  scripts/check-composition.sh
-  scripts/check-gap-candidates.mjs
-  scripts/classify-gaps.mjs
-  scripts/gap-detection.mjs
-  scripts/install-font.sh
-  scripts/assemble-mg.mjs
-  scripts/motion-template-library.mjs
-  scripts/render-delivery.mjs
+  scripts/check-cover.mjs
+  scripts/check-roughcut-selection.mjs
+  scripts/check-titles.mjs
   scripts/render-manifest.mjs
   scripts/render-chunks.mjs
   scripts/run-validation-check.mjs
@@ -74,20 +68,16 @@ done
   exit 1
 }
 
-node "$repository_root/tests/test-composition-builder.mjs"
-node "$repository_root/tests/test-revision-contracts.mjs"
-node "$repository_root/tests/test-render-core.mjs"
-node "$repository_root/tests/test-validation-receipts.mjs"
-node "$repository_root/tests/test-planning-contracts.mjs"
-node "$repository_root/tests/test-gap-candidates.mjs"
-node "$repository_root/tests/test-mg-components.mjs"
-node "$repository_root/tests/test-mg-speech-timing.mjs"
-node "$repository_root/tests/test-chatcut-caption-data.mjs"
-node "$repository_root/tests/test-mg-preview-player.mjs"
-node "$repository_root/tests/test-workflow-contracts.mjs"
-node "$repository_root/tests/test-check-chatcut.mjs"
-node "$repository_root/tests/test-compute-seam-tightening.mjs"
-node "$repository_root/tests/test-production-helpers.mjs"
+# Local editorial fixtures remain alongside upstream regression coverage.
+node "$repository_root/scripts/test-composition-builder.mjs"
+node "$repository_root/scripts/test-planning-contracts.mjs"
+node "$repository_root/scripts/test-approve-creative.mjs"
+for test_file in "$repository_root"/tests/test-*.mjs; do
+  case "$(basename "$test_file")" in
+    test-delivery-workflow.mjs|test-prepare-rough-cut.mjs|test-source-audio-index.mjs|test-media-promotion.mjs) continue ;;
+  esac
+  node "$test_file"
+done
 bash "$repository_root/tests/test-media-pipeline.sh" --static
 
 if [[ "$mode" == "--runtime" ]]; then

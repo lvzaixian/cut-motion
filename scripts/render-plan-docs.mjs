@@ -61,8 +61,8 @@ export const renderMotionPlanDoc = ({ jobId, captionMode, visualAxisMode, transc
     `# 分镜与 MG 方案 · ${jobId}`,
     "",
     captionMode === "subtitles"
-      ? "> 本文只列需要制作的 MG 节点；字幕全文见 `docs/caption-plan.md`。"
-      : "> 本文列出需要制作的 MG 节点及对应动态文案。",
+      ? "> 分镜表覆盖全部口播段落；局部 MG 另列制作细节，字幕全文见 `docs/caption-plan.md`。"
+      : "> 分镜表覆盖全部段落；局部 MG 另列制作细节及对应动态文案。",
     "",
     `- 当前字幕模式：\`${captionMode}\`（口播 + 单行字幕承载完整措辞，MG 只做补充）`,
     `- 视觉轴：\`${visualAxisMode}\`。`,
@@ -79,6 +79,19 @@ export const renderMotionPlanDoc = ({ jobId, captionMode, visualAxisMode, transc
   ]) lines.push(`- ${item.replace(/^-\s*/, "")}`);
   lines.push(
     "",
+    "## 分镜总览",
+    "",
+    "| Beat | 时间 | 场景 | 对应口播 | 视觉轴 | 画面处理 | 字幕 | 用途 |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- |"
+  );
+  for (const beat of beatMap.beats) {
+    const treatment = beat.mgScope === "local"
+      ? `局部 MG：${beat.templateId ?? beat.mgComponent ?? beat.recipe}`
+      : `口播画面；${beat.noMgReason ?? "字幕承载表达"}`;
+    lines.push(`| ${escapeCell(beat.id)} | ${formatClock(beat.start)}–${formatClock(beat.end)} | ${escapeCell(dash(beat.sceneId))} | ${escapeCell(beat.text)} | ${escapeCell(dash(beat.axis))} | ${escapeCell(treatment)} | ${escapeCell(cueLabel(beat, cues))} | ${escapeCell(dash(beat.intent))} |`);
+  }
+  lines.push(
+    "",
     "## MG 节点",
     ""
   );
@@ -89,6 +102,7 @@ export const renderMotionPlanDoc = ({ jobId, captionMode, visualAxisMode, transc
       `### ${beat.id} · ${escapeCell(extra.headlines?.[beat.id] ?? beat.intent)}（${formatClock(beat.start)}–${formatClock(beat.end)}，${(beat.end - beat.start).toFixed(2)} s，${beat.axis} 轴）`,
       "",
       `- 模板：\`${beat.templateId ?? beat.mgComponent ?? beat.recipe}\`；启动锚点：\`${beat.entryAnchorWordId ?? beat.audioAnchorTime}\``,
+      `- 对应口播：${escapeCell(beat.text)}`,
       `- 上屏原文（仅此${beat.onScreenCopy.length}项可入画）：${beat.onScreenCopy.map((copy) => `\`${copy}\``).join(" ")}`,
       `- 对应字幕：${cueIds} — ${escapeCell(cueText(beat, cues))}`,
       `- 用途：${escapeCell(beat.intent)}；任务 \`${beat.supportRole}\``,

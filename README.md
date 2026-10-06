@@ -4,11 +4,11 @@
 
 cut-motion 是一套开源 Agent 视频制作工作流，可以把一段口播素材制作成经过精剪、带字幕或动态图形设计的成片。
 
+此分支保留本地口播标准，并整合了上游 2026-10-05 的统一方案生成、13 类语义动画模板、关键词时间映射、字幕修复、波形剪口建议和渲染复用。四个用户决定与封面、五平台标题交付不变；维护与兼容边界见 [更新说明](docs/upstream-integration.md)。
+
 ## 如何使用
 
-你不需要学习剪辑软件、代码或终端命令。用 ChatGPT 桌面端的 Work/Codex、Claude Code 或 WorkBuddy 打开这个项目，然后直接告诉它要剪辑的视频路径。剪辑工作流需要 ChatCut Agent 集成；首次使用时，按[环境指南](docs/agent-setup.md#environment-preflight)为当前客户端安装并连接。
-
-ChatCut 官方目前提供以上三种客户端的安装指南，其中 ChatGPT 指南覆盖桌面端的 Work 和 Codex 标签页；ChatGPT 网站和远程 workspace 不在该指南的支持范围内。
+你不需要学习剪辑软件、代码或终端命令。用 Codex、Claude Code 或类似的编程 Agent 打开这个项目，然后直接告诉它要剪辑的视频路径。
 
 例如：
 
@@ -17,7 +17,7 @@ ChatCut 官方目前提供以上三种客户端的安装指南，其中 ChatGPT 
 /Users/你的名字/Desktop/video.mov
 ```
 
-Agent 会先检查电脑环境。项目内固定版本的 HyperFrames 和 GSAP 会复用或安装在忽略提交的 `node_modules/` 中；安装系统工具、修改全局配置或登录服务时，会征求你的同意。
+Agent 会先检查电脑环境。需要安装工具或登录服务时，会解释原因并征求你的同意；未经同意不会安装。
 
 ## 固定流程
 
@@ -25,24 +25,22 @@ Agent 会先检查电脑环境。项目内固定版本的 HyperFrames 和 GSAP �
 
 ```text
 intake → transcription → rough-cut → rough-cut-review → rough-cut-export
-→ motion-plan → composition → render → complete
+→ motion-plan → visual-arrangement-review → composition → render → complete
 ```
 
 1. 你提供口播视频；Agent 探测媒体并记录可选偏好。
-2. Agent 转写并对齐录音，处理参考逐字稿与录音之间的差异。
-3. ChatCut 只负责可编辑粗剪：删除明显口误、重复和无意义空白，不在 ChatCut 中制作字幕、MG 或 B-axis 画面。
-4. `review` 模式先在 `rough-cut-review` 等你审核粗剪；粗剪批准后，Agent 在 A-roll 导出期间生成字幕、MG 和整体风格三份方案，再一次性交给你审核。方案审核期间停在 `motion-plan`。
-5. 你批准方案后，Agent 进入 HyperFrames 制作并导出成片。只有你明确选择 `auto` 时，Agent 才会在方案生成后自动继续。
-6. `review` 快速路径只做必要的基础媒体检查，不跑全量自动校验、标准预览或短样片；默认直接按交付质量渲染一次。`auto` 不增加状态，只在既有转移上执行自动校验。
+2. 先完整转写、核对录音，再解析主旨、铺垫、叙述顺序和重录候选；有参考稿也不跳过。可使用 ChatCut 或已有本地 mlx-whisper，路径与用法见环境文档。
+3. 根据实际内容制作独立封面：你从 24 张原始静帧选底图，再从 6 张完整封面选最终图。
+4. ChatCut 按内容逻辑做可编辑粗剪。同一内容重录默认取最后一次完整表达，保留必要铺垫和有效强调，再精简无意义卡顿与空白；你确认时间线、节奏与倍率。
+5. 粗剪导出后，Agent 提出字幕、素材和动画的视觉编排包；默认 `review` 模式由你确认后，再在 HyperFrames 完成包装、合成和成片渲染。
+6. 交付封面、视频及五个平台各五条候选的标题表。默认只做必要检查；`auto` 必须由你明确选择，自动校验不能替代审美判断，也不授权发布。
 
 ## 两种字幕模式
 
 - **带字幕模式**：完整口播内容以清晰字幕呈现，只在有助于理解的位置加入少量动画；字幕和 MG 都在 HyperFrames 中完成。
 - **无字幕模式**：没有单独的字幕层，口播文案直接成为 HyperFrames 中的动态图形。
 
-带字幕模式以独立字幕承载完整口播，用局部 MG 补充信息；可复用模块见[动效模板库](templates/motion-graphics/README.md)，默认布局见[视觉语言](docs/visual-language.md)。无字幕模式按当前 job 的创意方案设计，不依赖通用成片模板。
-
-如果没有偏好，Agent 会直接沿用 job 默认的字幕模式和视觉轴，并把选择记录到 job 状态中，不增加偏好确认轮次。
+如果没有偏好，Agent 会在粗剪审核前给出字幕模式和视觉轴建议，并把选择记录到 job 状态中。
 
 ## 你可以提供什么
 

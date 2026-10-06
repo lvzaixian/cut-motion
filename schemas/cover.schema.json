@@ -1,0 +1,212 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "cut-motion Cover Package",
+  "oneOf": [
+    { "$ref": "#/$defs/legacyV1" },
+    { "$ref": "#/$defs/directCropV2" }
+  ],
+  "$defs": {
+    "crop": {
+      "type": "object",
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": { "type": "integer", "minimum": 0 },
+        "y": { "type": "integer", "minimum": 0 },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "frameCandidate": {
+      "type": "object",
+      "required": ["id", "path", "timestampSeconds", "reasons"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "timestampSeconds": { "type": "number", "minimum": 0 },
+        "reasons": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+      },
+      "additionalProperties": false
+    },
+    "output": {
+      "type": "object",
+      "required": ["path", "sha256", "width", "height", "colorSpace"],
+      "properties": {
+        "path": { "const": "output/cover.png" },
+        "sha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+        "width": { "const": 1080 },
+        "height": { "const": 1440 },
+        "colorSpace": { "const": "sRGB" }
+      },
+      "additionalProperties": false
+    },
+    "review": {
+      "type": "object",
+      "required": ["status", "actor", "decidedAt", "note"],
+      "properties": {
+        "status": { "enum": ["pending", "approved"] },
+        "actor": { "type": ["string", "null"] },
+        "decidedAt": { "type": ["string", "null"] },
+        "note": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "legacyV1": {
+      "type": "object",
+      "required": ["schemaVersion", "status", "styleId", "sourceVideo", "frameCandidates", "renderedCandidates", "selection", "publicLanguageReviewed", "output", "review"],
+      "properties": {
+        "$schema": { "type": "string" },
+        "schemaVersion": { "const": "1.0.0" },
+        "status": { "enum": ["pending", "ready", "approved"] },
+        "styleId": { "const": "centered-talking-head-yellow-v1" },
+        "sourceVideo": { "type": ["string", "null"] },
+        "frameCandidates": { "type": "array", "items": { "$ref": "#/$defs/frameCandidate" } },
+        "renderedCandidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "frameId", "crop", "topLines", "bottomLines", "source", "previewPath"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "frameId": { "type": "string", "minLength": 1 },
+              "crop": { "$ref": "#/$defs/crop" },
+              "topLines": { "type": "array", "minItems": 1, "maxItems": 2, "items": { "type": "string", "minLength": 1 } },
+              "bottomLines": { "type": "array", "minItems": 1, "maxItems": 2, "items": { "type": "string", "minLength": 1 } },
+              "source": { "enum": ["reference-script", "user-brief"] },
+              "previewPath": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "selection": {
+          "type": "object",
+          "required": ["frameId", "renderedCandidateId", "crop"],
+          "properties": {
+            "frameId": { "type": ["string", "null"] },
+            "renderedCandidateId": { "type": ["string", "null"] },
+            "crop": { "oneOf": [{ "$ref": "#/$defs/crop" }, { "type": "null" }] }
+          },
+          "additionalProperties": false
+        },
+        "publicLanguageReviewed": { "type": "boolean" },
+        "output": { "$ref": "#/$defs/output" },
+        "review": { "$ref": "#/$defs/review" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "enum": ["ready", "approved"] } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "frameCandidates": { "minItems": 8, "maxItems": 8 },
+              "renderedCandidates": { "minItems": 6, "maxItems": 6 }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "directCropV2": {
+      "type": "object",
+      "required": ["schemaVersion", "status", "styleId", "sourceVideo", "frameCandidates", "coverBase", "renderedCandidates", "selection", "visualReview", "publicLanguageReviewed", "output", "review"],
+      "properties": {
+        "$schema": { "type": "string" },
+        "schemaVersion": { "enum": ["2.0.0", "2.1.0"] },
+        "status": { "enum": ["pending", "ready", "approved"] },
+        "styleId": { "const": "talking-head-opinion-poster-v2" },
+        "sourceVideo": { "type": ["string", "null"] },
+        "frameCandidates": { "type": "array", "items": { "$ref": "#/$defs/frameCandidate" } },
+        "coverBase": {
+          "type": "object",
+          "required": ["sourceFrameId", "crop", "method", "path", "sha256", "width", "height"],
+          "properties": {
+            "sourceFrameId": { "type": ["string", "null"] },
+            "crop": { "oneOf": [{ "$ref": "#/$defs/crop" }, { "type": "null" }] },
+            "method": { "enum": ["direct-source-crop", null] },
+            "path": { "type": ["string", "null"] },
+            "sha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+            "width": { "const": 1080 },
+            "height": { "const": 1440 }
+          },
+          "additionalProperties": false
+        },
+        "renderedCandidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "frameId", "basePath", "headlineLines", "source", "previewPath"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "frameId": { "type": "string", "minLength": 1 },
+              "basePath": { "type": "string", "minLength": 1 },
+              "headlineLines": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "string", "minLength": 1 } },
+              "source": { "enum": ["reference-script", "user-brief"] },
+              "previewPath": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "selection": {
+          "type": "object",
+          "required": ["frameId", "renderedCandidateId"],
+          "properties": {
+            "frameId": { "type": ["string", "null"] },
+            "renderedCandidateId": { "type": ["string", "null"] }
+          },
+          "additionalProperties": false
+        },
+        "visualReview": {
+          "type": "object",
+          "required": ["subjectIntegrity", "headlineAboveEyes", "thumbnailReadable", "noOpaqueTextBackdrop", "noDarkGradient", "safeAreaChecked"],
+          "properties": {
+            "subjectIntegrity": { "type": "boolean" },
+            "headlineAboveEyes": { "type": "boolean" },
+            "thumbnailReadable": { "type": "boolean" },
+            "noOpaqueTextBackdrop": { "type": "boolean" },
+            "noDarkGradient": { "type": "boolean" },
+            "safeAreaChecked": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "publicLanguageReviewed": { "type": "boolean" },
+        "output": { "$ref": "#/$defs/output" },
+        "review": { "$ref": "#/$defs/review" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "schemaVersion": { "const": "2.0.0" },
+              "status": { "enum": ["ready", "approved"] }
+            },
+            "required": ["schemaVersion", "status"]
+          },
+          "then": {
+            "properties": {
+              "frameCandidates": { "minItems": 8, "maxItems": 8 },
+              "renderedCandidates": { "minItems": 6, "maxItems": 6 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "schemaVersion": { "const": "2.1.0" },
+              "status": { "enum": ["ready", "approved"] }
+            },
+            "required": ["schemaVersion", "status"]
+          },
+          "then": {
+            "properties": {
+              "frameCandidates": { "minItems": 24, "maxItems": 24 },
+              "renderedCandidates": { "minItems": 6, "maxItems": 6 }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}

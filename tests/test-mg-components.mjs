@@ -28,7 +28,7 @@ assert.equal(stage.layout.primaryBoundsNormalized.y, 0.42, "Overlay defaults do 
 assert.equal(planBeat({ templateId: "custom", templateData: {} }).layout.primaryBoundsNormalized.y, DEFAULT_MG_TOP_PX / 1920);
 const example = JSON.parse(fs.readFileSync(new URL("../templates/planning-inputs.example.json", import.meta.url), "utf8"));
 const exampleNote = planBeat(example.beats[1]);
-assert.equal(exampleNote.templateData.topPx / 1920, exampleNote.layout.primaryBoundsNormalized.y);
+assert.equal(exampleNote.layout.primaryBoundsNormalized.y, example.beats[1].layout.primaryBoundsNormalized.y, "Controlled example retains its authored focal placement");
 
 for (const id of componentNames()) {
   const component = resolveComponent(id);
@@ -196,7 +196,7 @@ try {
   fs.rmSync(path.join(temporary,"hyperframes/mg"), {recursive:true,force:true});
   fs.mkdirSync(path.join(temporary,"hyperframes/assets"));
   fs.writeFileSync(path.join(temporary,"hyperframes/assets/evidence.svg"), '<svg xmlns="http://www.w3.org/2000/svg"/>');
-  fs.writeFileSync(path.join(temporary,"hyperframes/index.template.html"), '<style>/* CUT_MOTION_MG_STYLES */</style><div id="root"><video id="a-roll"></video><!-- CUT_MOTION_MG_FRAGMENTS --></div><script>const timeline={}; /* CUT_MOTION_MG_TIMELINES */</script>');
+  fs.copyFileSync(new URL("../templates/hyperframes/index.template.html", import.meta.url), path.join(temporary,"hyperframes/index.template.html"));
   map.beats = componentNames().map((id,index) => ({...base,id:`canonical-${index}`,templateId:id,templateData:{
     copy:Array.from({length:resolveComponent(id).meta.legacyCopySlots},(_,i)=>`文案${i}`),
     image:"assets/evidence.svg",alt:"证据",

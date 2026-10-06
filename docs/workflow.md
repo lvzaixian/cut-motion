@@ -1,96 +1,87 @@
 # Workflow Architecture
 
-Use this document as a just-in-time phase router. At the start or resume of a job, read `state/workflow.json` with `scripts/workflow-state.mjs ... status`, then read only the matching route and phase section below. Load later-stage guidance when the job reaches that state. The state machine records transitions; it does not load Agent instructions.
-
-## Delivery time targets
-
-For an ordinary two-minute finished video, target rough-cut handoff within 6 minutes, delivery of the combined three plans within 4 minutes, and composition/export within 8 minutes: total execution within 18 minutes. Exclude only time waiting for the user's review or reply; preparation, tool runtime and recovery count inside the phase budgets. This is an execution preference, not a gate or a proven benchmark. Start the clean A-roll export during plan preparation. If a phase stalls, report its impact and next step, then continue useful independent work.
+Each job owns its source, state, previews, logs, and output under `jobs/<job-id>/`. Never overwrite the source or place generated media in the repository root.
 
 ## Active-state route
 
-| `currentState` | Read for this state |
+On resume, run `workflow-state.mjs ... status` and load guidance for the active state. New productions still read every required intake standard. Do not repeat completed transcription, upload, export or analysis merely because a conversation resumed.
+
+| State | Guidance |
 | --- | --- |
-| `intake` | [Intake](#intake) |
-| `transcription` | [Transcript and alignment](#transcript-and-alignment) |
-| `rough-cut` | [Rough cut](#rough-cut) and [Talking-head trim standard](talking-head-trim-standard.md) |
-| `rough-cut-review` | [Rough-cut review, export, and plans](#rough-cut-review-export-and-plans) |
-| `rough-cut-export` | [Rough-cut review, export, and plans](#rough-cut-review-export-and-plans) |
-| `motion-plan` | [Motion plan](#motion-plan); consult custom-design guidance only for a custom MG |
-| `composition` | [Composition](#composition); templates already implement the shared animation contract. Custom modules use [the composition contract](technology.md#hyperframes-composition-contract) |
-| `render` | [Delivery](#delivery) |
-| `complete` | Read [Editorial revisions](revision-standard.md) only when making a revision |
+| `intake` / `transcription` | Setup, content analysis, cover and applicable unscripted standard |
+| `rough-cut` / `rough-cut-review` | Trim standard, selection and recorded user decision |
+| `rough-cut-export` | Exact export identity, media promotion and basic lock |
+| `motion-plan` | Unified input, subtitle segmentation, MG selection and measured timing |
+| `visual-arrangement-review` | Current creative package and frozen hashes; wait for user decision |
+| `composition` | Approved cues, templates/custom modules and composition contract |
+| `render` | Current renderer receipt and title package |
+| `complete` | Revision standard only when revising |
 
-The phase steps below contain routine commands and checks. Read [`state-machine.md`](state-machine.md) only for recovery, mode changes, or revision routing.
+## Stage contracts
 
-## Intake
+| State | Contract |
+| --- | --- |
+| `intake` | Validate immutable source media and record deferred preferences; do not wait for cover approval. |
+| `transcription` | Transcribe the full recording, reconcile wording, analyze narrative and repeated takes in `docs/content-analysis.md`, then approve the content-grounded cover and lock source word timings. |
+| `rough-cut` | Build the analyzed narrative in ChatCut using the last complete take in each retry group; preserve required setup and record the editable project/timeline. |
+| `rough-cut-review` | User approves, revises, or explicitly chooses `fallback-auto`. |
+| `rough-cut-export` | Export the approved rough cut and perform the basic media lock; `fallback-auto` also runs the trim audit. |
+| `motion-plan` | Author wording, captions, beat map, MG, axis, and timing for HyperFrames. |
+| `visual-arrangement-review` | User reviews `docs/creative-confirmation.md` and approves the planned visual arrangement or returns it to planning. |
+| `composition` | Build deterministic HyperFrames HTML/CSS/GSAP composition. |
+| `render` | Produce the requested delivery, verify media, then generate the SHA-bound platform title package. |
+| `complete` | Keep the job available for scoped revisions. |
 
-- Require a local talking-head recording. If it is missing, request its path and stop. Honor any supplied caption, reference-script, and visual-axis preferences; otherwise use the job defaults without a separate question round.
-- Use `scripts/scaffold-project.sh`, put the source in the job's `input/`, and probe it with FFprobe. Use a 30 fps project timeline by default, recording the source rate separately. The once-per-job ChatCut and local dependency preflight is specified in `AGENTS.md`.
-- The original source is immutable. Create a new artifact for edits and update `state/project.json` for destructive-looking operations. Keep job media, generated state, previews, and logs in that job directory.
-- If a required integration or dependency is missing, follow [Environment preflight](agent-setup.md#environment-preflight). Reuse or install pinned HyperFrames/GSAP in the repository's ignored `node_modules/` without asking; global/system dependency installs, global Agent configuration changes, and OAuth require user approval. Client-specific ChatCut instructions are in that guide.
-- Once ChatCut Script is available, continue with [Rough cut](#rough-cut). Use `review-cut` for the handoff; local transcription artifacts need not be created merely to advance through the intermediate state labels.
+## Human-first path
 
-## Transcript and alignment
+ChatCut is only the rough-cut editor. Do not add released subtitles or motion graphics there. HyperFrames owns captions, B-axis treatment, MG, composition timing, and final rendering so caption timing and MG remain bound to one timeline.
 
-- Use ChatCut for transcription and timing; do not substitute local ASR. Local silence analysis may support a targeted seam review but does not provide transcript or speech authority.
-- Preserve a supplied reference script unchanged under `input/reference-scripts/` and record its SHA-256 in `state/workflow.json` and `state/reference-script-annotations.json`. The recording determines what was spoken; reconcile omissions and additions before release. ChatCut transcription and timing are provisional audio-derived evidence for the rough cut.
-- In a reference script, `【】` contains medium-strength visual notes scoped to the immediately preceding semantic clause unless the note specifies another range. Keep notes separate from speech; only reconciled `speechText` can enter released wording. Ordinary `[]` is spoken text. Reject empty, nested, unclosed, or unmatched `【】` during intake.
-- Edit from ChatCut's transcription and timing directly. Local transcript conversion and reconciliation are deferred until after rough-cut approval. If `state/transcript.json` already exists, the normal transcription transition locks it without requiring reconciliation. Preserve any established source-transcript lock.
+After full transcription and content analysis, prepare the cover within `transcription` before entering `rough-cut`: new `2.1.0` jobs present exactly 24 real source frames, record the user's selected 3:4 crop, and—only if needed—calibrate the locked style separately in `checkpoints/`. Then give the user exactly six complete `talking-head-opinion-poster-v2` direct-crop previews that all reuse one cropped base and fixed eye-above two-line layout but have different public copy. Historical V1 and `2.0.0` packages retain their eight-frame checks. Render the selected formal preview to `output/cover.png`, and record it with `approve-cover`. The cover is a separate publishing asset; it does not enter the video timeline or affect `output/final.mp4`. A later cover-only revision records another approval without reopening rough cut, composition, or delivery.
 
-## Rough cut
+After the final render exists, generate `state/titles.json` and `output/titles.xlsx` under `docs/title-standard.md`. The package holds exactly five candidates for 抖音、视频号、小红书、B站、快手 and is verified against the hash of this render before `render → complete`. It is a publication-preparation deliverable, not an automated publishing action or user approval gate.
 
-- Follow the [Talking-Head Trim Standard](talking-head-trim-standard.md): one semantic edit, one internal-pause cleanup, one edge tightening, then deliver. `prepare-rough-cut.mjs ... tighten` handles index creation, mapping and calculation from saved ChatCut responses. Submit its saved `editItemArgs` directly as one batch; preserve frame counts instead of converting microsecond ranges back into durations.
-- Use `node scripts/workflow-state.mjs <job>/state/workflow.json review-cut --project-id <id> --timeline-id <id>` to record and present the cut. No reconciliation, candidate audit or Caption Plan is needed before listening. Existing usable cuts can go straight to review; revisions address the user's reported passages.
-- Give the project link and duration immediately after the editing batch is confirmed. Report skipped/blocked operations honestly; further diagnosis follows user feedback.
-- If ChatCut is unavailable, record `roughCutEngine: "ffmpeg-fallback"` and use the conservative FFmpeg fallback. `state/trim-plan.json` and its legacy audit apply only to that explicit fallback.
+In `review` mode, the user inspects the ChatCut timeline before export, then the planned visual arrangement package before composition, and finally the rendered file. The visual-arrangement review is not a second rough-cut edit review: it confirms the package's planned captions, MG, copy, timing, and visual axis. The default path does not render a standard preview, run a full visual QA pass, or compare two encodes.
 
-## Rough-cut review, export, and plans
+## Automatic path
 
-- `rough-cut-review` is the user's normal full playback in ChatCut. Do not ask for a separate item-by-item listening pass. Record the user's explicit approve, revise, or `fallback-auto` decision in `review`; in `auto`, record `automatic-fallback` only when the user selected that mode. Do not infer a decision from silence.
-- Record an explicit decision with `node scripts/workflow-state.mjs <job>/state/workflow.json approve`, `revise --note "..."`, or the user-selected `fallback-auto --actor user --note "..."`.
-- While the user reviews the stable cut, prepare MG content/template choices and real wording exceptions in `state/planning-inputs.json`; after approval, bind `sourceSegmentIds` and entry/exit anchors to generated `main-001`, `main-002`, etc. in the approved preview's entry order. These are generated transcript IDs, not ChatCut item IDs or Script row numbers.
-- After explicit approval, start or resume one clean A-roll export immediately. Reuse only media or exports belonging to this job's project and approved timeline; if the render ID is unavailable, check the job's local output and call `track_export` with `latest=false`. Include the job ID in a new export's filename. Save the returned `renderId`, project ID, timeline ID and filename in `<job>/state/roughcut-export.json`; submit a new export only when no usable output or running task exists.
-- On completion, identify this render's actual download by its returned filename (allowing a browser collision suffix) and match `outputSizeBytes` when reported. An incomplete download or a similarly named older file is not usable. If the file is missing, check the current download once and use the integration's supported download recovery; re-export only when the completed output cannot be recovered. Record the confirmed local path, then run `node scripts/promote-job-media.mjs <job> roughcut <source-media>` before `node scripts/workflow-state.mjs <job>/state/workflow.json advance --artifact roughcut/a-roll.mp4`. Do not advance with an unconfirmed file or repair a media lock by editing workflow JSON directly.
-- In parallel, call ChatCut `preview_timeline({views:["transcript"]})` once on the approved active timeline. Save the complete returned pages, in order, in `<job>/state/chatcut-main-timeline.json`; follow `nextOffset` with the same timeline, range and filters. The helpers unwrap structured or text JSON. Entry text and frame ranges are the plan authority; coverage counts transcript-bearing items, not Script rows. Author wording and design once in `state/planning-inputs.json`: use `corrections` for confirmed terminology and `captionEdits` short phrase arrays only for entries needing splits. The generator derives cue times; explicit timed cues remain available for intentional boundary changes. Use shared reconciliation defaults and author only actual exceptions. If a CaptionProgram already exists, reuse saved cards/tokens or call `read_captions({json:JSON.stringify({words:true,limit:100})})` on this project's approved timeline, retaining revision and filters for continuation pages. Set `captionTimingPath` to reuse that data; do not create ChatCut captions to obtain timing. See [Subtitle segmentation](subtitle-segmentation-standard.md). Run `node scripts/generate-plan.mjs <job> --write` once to derive all three plans and corrected wording together, then deliver while export runs. Correct an input error in that one input and rerun; no dry-run, manual derived-file synchronization or regeneration for explanatory prose edits is needed.
-- In `review`, deliver all three plans together as soon as they are generated and wait for one package approval before composition. While export or download recovery is pending, keep the job at `rough-cut-export`; after confirmed media is promoted and locked, advance to `motion-plan`. A package approval received before media readiness remains valid; do not regenerate, redeliver or request approval again merely because the export finishes. Composition requires both package approval and the A-roll media lock. Explicitly selected `auto` skips the package wait but still requires that lock. Stream end-duration differences alone do not mean A/V desynchronization and do not require trimming; the media check compares stream start offsets.
+Only after the user explicitly selects `auto`, it follows the same state route, selects the rough-cut fallback after recording the timeline, records automatic acceptance of the validated visual package, warns about the delay, and runs deterministic transcript, plan, render, and media checks. Optional reports or `previews/final-preview.mp4` may be generated when the user explicitly asks for an audit or preview.
 
-## Motion plan
+## Wording and visual axis
 
-- The three plans are generated and delivered during `rough-cut-export`. At `motion-plan`, reuse that package and any explicit approval already received. In `review`, wait for approval if it is still pending before running `compose-job.mjs`; in `auto`, continue only if the user explicitly selected Auto. Regenerate only when the transcript or an intentional plan decision changes.
-- For discrete MG nodes, use the [MG cadence target](density-and-layout.md#mg-cadence-target) to select meaningful processes, relationships, contrasts and results; ordinary speech stays caption-only. Choose the semantic relationship before styling: inputs followed by a named result use `converge-sources`, not a parallel card exposing the result in its initial heading.
-- Default A-roll MG to the upper-middle area: content templates start at 280px on the 1080×1920 canvas. Keep the overall MG and background card horizontally centered; internal rows may align left or right. Adjust height and width to avoid captions; eyes and mouth do not need clearance; move tall lists upward with compact rows inside a centered card rather than shifting the whole card to a corner. Template sample counts and directions must fit the spoken items and causal relationship; adapt or use a custom module rather than merging items to fill fixed slots.
-- Place each MG from its relevant main-timeline entry range. The generated `:word-001` anchor represents the whole entry. For multi-element MGs, bind internal reveals to actual keyword timestamps using [existing ChatCut word timing](mg-speech-timing.md); collect only the needed phrases during composition preparation, without delaying routine plan delivery or adding a transcription call by default.
-- Reuse the saved caption mode, visual axis and design system. Select existing MG templates; caption-only beats need no MG rationale. The Creative Confirmation is part of the three-plan package; ask for one package decision, not separate approvals for each document.
+The recording remains authoritative for spoken content. A supplied reference script is preserved and reconciled; it can provide release wording only where the recording supports it. ChatCut or the existing local mlx-whisper runtime supplies draft text and timing evidence; see `docs/agent-setup.md` for verified host paths and use. Complete the content analysis before editing even when a reference script exists. Follow `docs/talking-head-trim-standard.md` for latest-take selection and context-preserving cuts.
 
-## Composition
+Without a reference script, follow [the unscripted talking-head standard](unscripted-talking-head-standard.md): establish the actual listening/review capability during transcription, resolve known wording doubts in one batch before release-caption planning, and review both speech and visible resets before the first rough-cut review. Use the existing template sections; this adds no state or user decision. ASR and narrow user confirmations never establish full-source listening, and a previous job's exception cannot be inherited.
 
-- Resolve multi-element `templateData.revealCues` using [existing ChatCut timing](mg-speech-timing.md). Saved measured caption tokens already use timeline frames and need no source-window conversion. Otherwise query only the MG keywords, reuse the snapshot confirming the approved edit, and run `prepare-rough-cut.mjs <job> windows <snapshot>` for source-to-timeline mapping. Refresh a snapshot only after further edits. Each spoken item, including a result or tool name in a heading, enters on its own onset; neutral headings/decorations may use relative delays. Keep the resolved state readable and design the exit. This stays inside composition without an extra approval or state.
-- When composition begins, check the job-linked pinned CLI with `test -x <job>/hyperframes/node_modules/.bin/hyperframes`. If missing, run `./scripts/check-environment.sh install-job <job-directory>`; it reuses the root `node_modules/` first. This project-local setup needs no approval and does not delay plan delivery.
-- Run `node scripts/compose-job.mjs <job-directory>` after plan approval in `review`, or after plan generation in explicitly selected `auto`. It advances planning, assembles MG, installs captions and builds composition, then prints the ready batch snapshot and render commands. Follow that summary; no manual status edit, build, source-code inspection or standalone checker run is needed.
-- For a local update, use `assemble-mg.mjs --beat <id>` or edit the affected custom module, then advance composition normally. The builder preserves authored files; the render entrypoint rebuilds before rendering.
-- Caption transcript/timing checks and a successful composition build remain required because they affect the rendered file. Fingerprint audits are optional diagnostics via `verify`; they do not block routine composition or delivery.
+For screenshots, that standard requires an early complete material inventory, whole-image presentation with field-level masking by default, an explicit reading task, specific spoken-word anchors, and separate entry/interval/final-hold budgets. Store executable facts in the existing Beat Map fields and regenerate the creative package. Within an approved plan, a first complex screenshot group or an identified masking, overlap, or timing risk may receive a bounded encoded context diagnostic before the delivery render; this does not change the default prohibition on routine standard previews or full automatic QA. The user's requested complete version remains the review artifact.
 
-## Delivery
-
-- Before encoding the full video, perform [MG final-state self-review](#mg-final-state-self-review) on the built HTML.
-- Use the job package's `npm run render` or `npm run render:revision` entrypoint for the normal one-render delivery path. The final MP4 must be readable, contain audio and video, and have a positive duration with aligned stream starts.
-- Both initial deliveries and revisions write directly to `output/final.mp4`. On successful render, run `node scripts/workflow-state.mjs <job>/state/workflow.json advance --artifact output/final.mp4`, then give that actual output path to the user. The renderer and transition already probe media; no additional full audit or post-export preview cycle is needed for routine delivery.
-- Review the rendered MP4 as the user's editorial handoff; that review is not another workflow state or gate. Claim automatic-validation completion only when `auto` was explicitly selected and its listed checks passed.
-
-### MG final-state self-review
-
-After HTML assembly, choose one timestamp per MG after its last content reveal finishes and before its exit starts, using the authored timeline and delivery frame grid. The target is the complete expanded state, not the last frame of the MG interval. Capture all requested times in one batch from the job's `hyperframes/` directory:
-
-```bash
-./node_modules/.bin/hyperframes snapshot --at <t1,t2,...> --no-end --describe false --output ../previews/mg-final-state
-```
-
-The Agent must open the images and inspect complete phrases, one-character orphan lines, overflow, layout spacing, horizontal centering and caption clearance. Fit the actual copy by adjusting card width, column/node space or arrangement before shrinking text. Template reuse does not replace this inspection.
-
-Review every MG on the first delivery; after a local revision, review only affected MGs. Fix issues and recapture those final states before full export. Routine review covers only the complete state; inspect entrance, intermediate or exit motion only for a reported animation issue. If HTML snapshots cannot show a specific MG correctly, use a short 2–3 second affected-window preview to inspect that same complete state.
-
-This is an Agent visual task, not an automated pass/fail validator. It adds no code-level blocking checks, review receipts, workflow state or user approval. Other standalone validators and full-video audits remain optional diagnostics.
+`subtitles` uses HyperFrames subtitle layers for the settled wording and reserves MG for supplemental meaning. `motion-copy` puts spoken wording inside designed motion. A-axis keeps the talking head full-frame with localized overlays; B-axis makes motion design the stage with a protected live PiP. B-axis and hybrid require explicit user choice.
 
 ## Revisions
 
-For a completed job, reopen the earliest affected state with `scripts/workflow-state.mjs`; use [`revision-standard.md`](revision-standard.md) to scope and document the revision. Keep the settled motion plan and creative-confirmation package as the baseline for local composition edits; use motion planning for global creative changes.
+Use `reopen rough-cut|motion-plan|composition|delivery` for completed jobs. Parameter-only changes should use an affected-window preview before a full delivery render. Delivery revisions render to `output/final.candidate.mp4`, require a regenerated title package bound to that candidate, and are promoted by the workflow after media and title-package verification.
+
+## Unified planning for new jobs
+
+Prepare one `state/planning-inputs.json` for confirmed wording exceptions, semantic caption splits, MG choices, supported visual decisions and material registration. Save every approved main-timeline preview page in `state/chatcut-main-timeline.json`. Prefer sparse `captionEdits`; explicit timed cues remain available for intentional boundaries. Local recording-backed wording and semantic one-line rules still apply.
+
+After the approved export is promoted and locked, run `node scripts/generate-plan.mjs <job> --write` to derive captions, Beat Map, reconciliation and the three human-readable plans together. Existing reconciled transcripts and authored modules are protected; intentional replacement requires reopening the affected stage and the replacement flag. Old jobs without the new input/snapshot keep their existing approved plans.
+
+Choose among 13 semantic templates by the viewer's current question. Text, item counts, position, safe regions, V2 decisions and `materials` follow this episode. Controlled production uses one `motion.reveal` per object cue. Stage helpers belong to the existing shared stage and never create another speaker.
+
+An entry's `:word-001` is a whole phrase. Before presenting the visual package, resolve the MG's needed keywords from measured words, including actual cut/rate mapping. Persist separate `transcript.timingAnchors` with provenance; do not duplicate those words in the subtitle text or use interpolation as measured evidence. Composition must not change approved object timing.
+
+Validate internally with `approve-creative`, advance to `visual-arrangement-review`, and obtain the existing package decision. `compose-job.mjs` stops at this pending gate and checks approval plus actual A-roll hash before assembly. A valid plan edited while pending review cannot silently inherit the old package hashes.
+
+## Waveform proposals and export reuse
+
+`prepare-rough-cut.mjs <job> tighten <saved-timeline-pages.json>...` computes a batch proposal after semantic selection. It supports one source, one continuous track, integer fps and 1x. Signal thresholds cannot decide whether breath, quiet words or natural pauses are disposable. After authorized edits, read back the actual timeline and refresh `windows`; never adopt a proposed map before execution. `windows` maps explicit rates without rescanning audio.
+
+After rough-cut approval, start or resume one clean export. Record project/timeline/render IDs, returned filename and reported byte size in `state/roughcut-export.json`; match that identity on recovery. Recover the same output before submitting a replacement. Prepare input while export runs; composition still waits for media lock and visual approval. Promotion preserves export copies.
+
+## MG final-state self-review
+
+The composition summary can provide one snapshot batch for affected MGs after their last reveal settles and before exit. Inspect complete copy, orphan lines, overflow, safe regions and material readability. This is an internal visual aid, not a user decision or proof of motion/audio. Complex evidence groups and timing defects still use encoded context windows including entry, full visibility and exit.
+
+## Render reuse
+
+Use the job's `render` or `render:revision` entrypoint. Receipts must match composition, media, renderer/browser environment and frame grid; a filename alone cannot prove reuse. Ordinary jobs remain monolithic; chunks serve a known benefit or long-media failure. Cache contract changes may invalidate old chunks. Revisions use `final.candidate.mp4` and require candidate-bound titles before promotion.

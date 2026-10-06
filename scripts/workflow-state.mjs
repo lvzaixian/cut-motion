@@ -2,30 +2,36 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { buildComposition } from "./build-composition.mjs";
 import {
+  assertCreativeAuthorities,
+  assertCompositionReady,
   assertRegularContainedFile,
   beginWorkflowRevision,
   collectCreativeAuthorityDrift,
   collectWorkflowDrift,
   computeCreativeAuthorities,
   computeCreativeDocumentFingerprints,
+  enableVisualArrangementReviewForMotionPlan,
   ensureWorkflowDefaults,
+  hasActiveSubtitleMgCadence,
   invalidateCreativeArtifacts,
   jobRootForWorkflow,
   readJson,
   recoverTranscriptTransaction,
+  resetVisualArrangementReview,
   saveWorkflow,
   sha256File,
   validateActiveReference,
   visualPlanChanges,
   writeJsonAtomic
 } from "./workflow-utils.mjs";
-import { buildComposition } from "./build-composition.mjs";
+import { isVisualOrchestrationActive } from "./visual-orchestration-version.mjs";
 
 const [workflowPath, command, ...rawArguments] = process.argv.slice(2);
 
 if (!workflowPath || !command) {
-  console.error("Usage: node workflow-state.mjs <workflow.json> <status|verify|advance|review-cut|lock-transcript|approve|revise|fallback-auto|replan|reopen|set-mode|set-caption-mode|set-axis-mode> [value] [--actor name] [--artifact path] [--note text]\nreview-cut --project-id <id> --timeline-id <id> records a ChatCut cut for listening; lock-transcript binds state/transcript.json after review.");
+  console.error("Usage: node workflow-state.mjs <workflow.json> <status|verify|lock-transcript|advance|approve-cover|approve|approve-creative|approve-visual-arrangement|revise|revise-visual-arrangement|fallback-auto|waive-v1-roughcut-selection-for-ffmpeg-fallback|replan|reopen|set-mode|set-caption-mode|set-axis-mode> [value] [--actor name] [--artifact path] [--note text]");
   process.exit(64);
 }
 
@@ -36,6 +42,7 @@ const stages = {
   "rough-cut-review": { gate: true, next: "rough-cut-export", revise: "rough-cut" },
   "rough-cut-export": { next: "motion-plan", artifact: true },
   "motion-plan": { next: "composition", artifact: true },
+  "visual-arrangement-review": { gate: true, next: "composition", revise: "motion-plan" },
   composition: { next: "render", artifact: true },
   render: { next: "complete", artifact: true },
   complete: { terminal: true }
@@ -56,47 +63,147 @@ for (let index = 0; index < rawArguments.length; index += 1) {
 const jobRoot = jobRootForWorkflow(workflowPath);
 recoverTranscriptTransaction(jobRoot);
 const workflow = ensureWorkflowDefaults(JSON.parse(fs.readFileSync(workflowPath, "utf8")));
-const initialState = workflow.currentState;
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
-const workflowGuideSections = {
-  intake: "intake",
-  transcription: "transcript-and-alignment",
-  "rough-cut": "rough-cut",
-  "rough-cut-review": "rough-cut-review-and-export",
-  "rough-cut-export": "rough-cut-review-and-export",
-  "motion-plan": "motion-plan",
-  composition: "composition",
-  render: "delivery",
-  complete: "revisions"
-};
-const printStageGuideHint = (state) => {
-  const section = workflowGuideSections[state];
-  if (section) console.error(`Stage guidance: docs/workflow.md#${section}`);
-};
-const actor = String(options.actor ?? (["advance", "review-cut", "lock-transcript"].includes(command) ? "agent" : "user"));
-const artifact = command === "review-cut" ? "state/chatcut-roughcut.json" : options.artifact ? String(options.artifact) : null;
+const roughCutSelectionPolicy = "reference-aligned-last-complete-take-v1";
+const v1FallbackWaiverCommand = "waive-v1-roughcut-selection-for-ffmpeg-fallback";
+const actor = String(options.actor ?? (["advance", "lock-transcript"].includes(command) ? "agent" : "user"));
+const artifact = options.artifact ? String(options.artifact) : null;
 const note = options.note ? String(options.note) : null;
 const now = new Date().toISOString();
 const visualBaselinePath = path.join(jobRoot, "state", "visual-plan-baseline.json");
 let pendingVisualBaseline = null;
-
-const appendHistory = (action, from, to, entryActor = actor) => {
-  workflow.history.push({ at: now, action, actor: entryActor, from, to, artifact, note, revisionId: workflow.revisionId });
+let deliveryPromotion = null;
+const fullAuditRequested = workflow.mode === "auto" || workflow.roughCutReviewDecision === "automatic-fallback";
+const requiresVisualArrangementReview = () => workflow.visualArrangementReviewRequired === true;
+const isNonemptyString = (value) => typeof value === "string" && value.trim().length > 0;
+const isIsoTimestamp = (value) => isNonemptyString(value)
+  && /^\d{4}-\d{2}-\d{2}T/.test(value)
+  && Number.isFinite(Date.parse(value));
+const hasValidV1FallbackWaiver = () => {
+  const waiver = workflow.roughCutSelectionFallbackWaiver;
+  return waiver?.actor === "user" && isIsoTimestamp(waiver.waivedAt) && isNonemptyString(waiver.reason);
+};
+const validateFfmpegFallbackEligibility = () => {
+  const project = readJson(path.join(jobRoot, "state", "project.json"));
+  if (project.roughCutEngine !== "ffmpeg-fallback") {
+    throw new Error("FFmpeg rough-cut fallback requires project.roughCutEngine=ffmpeg-fallback");
+  }
+  const selectionPath = path.join(jobRoot, "state", "roughcut-selection.json");
+  if (!fs.existsSync(selectionPath)) {
+    if (workflow.roughCutSelectionPolicy === null) return;
+    if (workflow.roughCutSelectionPolicy === roughCutSelectionPolicy) {
+      throw new Error(`reference-aligned-last-complete-take-v1 requires a ChatCut rough-cut selection; ffmpeg-fallback cannot enforce it. Use ${v1FallbackWaiverCommand} only when the user explicitly accepts the downgrade.`);
+    }
+    throw new Error(`Unknown rough-cut selection policy: ${workflow.roughCutSelectionPolicy}`);
+  }
+  assertRegularContainedFile(path.join(jobRoot, "state"), selectionPath, "Rough-cut selection");
+  if (workflow.roughCutSelectionPolicy !== null) {
+    if (workflow.roughCutSelectionPolicy === roughCutSelectionPolicy) {
+      throw new Error(`reference-aligned-last-complete-take-v1 requires a ChatCut rough-cut selection; ffmpeg-fallback cannot enforce it. Use ${v1FallbackWaiverCommand} only when the user explicitly accepts the downgrade.`);
+    }
+    throw new Error(`Unknown rough-cut selection policy: ${workflow.roughCutSelectionPolicy}`);
+  }
+  if (workflow.roughCutSelectionPolicyOrigin !== roughCutSelectionPolicy) {
+    throw new Error("FFmpeg fallback with state/roughcut-selection.json requires a V1 origin and explicit user waiver");
+  }
+  if (!hasValidV1FallbackWaiver()) {
+    throw new Error(`V1-origin ffmpeg fallback requires an explicit user waiver via ${v1FallbackWaiverCommand}`);
+  }
 };
 
-const move = (to, action, entryActor = actor) => {
+const appendHistory = (action, from, to, entryActor = actor, entryArtifact = artifact) => {
+  workflow.history.push({ at: now, action, actor: entryActor, from, to, artifact: entryArtifact, note, revisionId: workflow.revisionId });
+};
+
+const move = (to, action, entryActor = actor, entryArtifact = artifact) => {
   const from = workflow.currentState;
   workflow.currentState = to;
   workflow.pendingGate = stages[to]?.gate ? to : null;
   if (stages[to]?.gate) {
-    workflow.gates[to] = { status: "pending", at: now, actor: entryActor, artifact, note, revisionId: workflow.revisionId };
+    workflow.gates[to] = { status: "pending", at: now, actor: entryActor, artifact: entryArtifact, note, revisionId: workflow.revisionId };
   }
-  appendHistory(action, from, to, entryActor);
+  appendHistory(action, from, to, entryActor, entryArtifact);
 };
 
 const runCheck = (scriptName, argumentsList, failurePrefix) => {
   const result = spawnSync(process.execPath, [path.join(scriptDirectory, scriptName), ...argumentsList], { encoding: "utf8" });
   if (result.status !== 0) throw new Error(`${failurePrefix}: ${result.stderr.trim() || result.stdout.trim()}`);
+};
+
+const checkCover = (readyOnly = false) => runCheck(
+  "check-cover.mjs",
+  [workflowPath, ...(readyOnly ? ["--ready"] : [])],
+  "Cover validation failed"
+);
+const checkTitles = (renderedVideoPath) => runCheck(
+  "check-titles.mjs",
+  [workflowPath, renderedVideoPath],
+  "Title package invalid"
+);
+const checkRoughCutSelection = () => {
+  if (workflow.roughCutSelectionPolicy === null) {
+    if (workflow.roughCutSelectionPolicyOrigin === roughCutSelectionPolicy
+      || fs.existsSync(path.join(jobRoot, "state", "roughcut-selection.json"))) {
+      throw new Error("ChatCut rough-cut selection cannot be disabled by a null policy; only historic workflows without a selection file may use null");
+    }
+    return;
+  }
+  if (workflow.roughCutSelectionPolicy !== roughCutSelectionPolicy) {
+    throw new Error(`Unknown rough-cut selection policy: ${workflow.roughCutSelectionPolicy}`);
+  }
+  runCheck("check-roughcut-selection.mjs", [workflowPath], "Rough-cut selection invalid");
+};
+const promoteTitleSourceDelivery = (fromRelativePath, toRelativePath) => {
+  const titlesPath = path.join(jobRoot, "state", "titles.json");
+  const titles = readJson(titlesPath);
+  if (titles.sourceDelivery?.path === fromRelativePath) {
+    titles.sourceDelivery.path = toRelativePath;
+    writeJsonAtomic(titlesPath, titles);
+  }
+};
+
+// ponytail: thrown failures roll back; abrupt termination retains backups, add journal recovery if crash-safe promotion is required.
+const beginDeliveryPromotion = (candidatePath, candidateReceiptPath, canonicalPath) => {
+  const backupDirectory = fs.mkdtempSync(path.join(jobRoot, "output", ".delivery-promotion-"));
+  const originalPaths = [canonicalPath, `${canonicalPath}.render.json`, path.join(jobRoot, "state", "titles.json"), path.resolve(workflowPath), candidatePath, candidateReceiptPath];
+  const originals = [];
+  try {
+    for (const [index, originalPath] of originalPaths.entries()) {
+      const backupPath = fs.existsSync(originalPath) ? path.join(backupDirectory, String(index)) : null;
+      if (backupPath) {
+        assertRegularContainedFile(jobRoot, originalPath, "Delivery promotion original");
+        try { fs.linkSync(originalPath, backupPath); }
+        catch { fs.copyFileSync(originalPath, backupPath, fs.constants.COPYFILE_EXCL); }
+      }
+      originals.push({ originalPath, backupPath });
+    }
+  } catch (error) {
+    fs.rmSync(backupDirectory, { recursive: true, force: true });
+    throw error;
+  }
+  deliveryPromotion = { backupDirectory, originals };
+};
+const rollbackDeliveryPromotion = () => {
+  if (!deliveryPromotion) return;
+  const transaction = deliveryPromotion;
+  const failures = [];
+  const restore = (operation) => { try { operation(); } catch (error) { failures.push(error); } };
+  for (const { originalPath, backupPath } of transaction.originals) {
+    restore(() => backupPath ? fs.renameSync(backupPath, originalPath) : fs.rmSync(originalPath, { force: true }));
+  }
+  for (const target of [path.join(jobRoot, "state", "titles.json"), path.resolve(workflowPath)]) {
+    restore(() => fs.rmSync(`${target}.${process.pid}.tmp`, { force: true }));
+  }
+  if (failures.length) throw new AggregateError(failures, `Delivery rollback incomplete; retained backups: ${transaction.backupDirectory}`);
+  fs.rmSync(transaction.backupDirectory, { recursive: true, force: true });
+  deliveryPromotion = null;
+};
+const commitDeliveryPromotion = () => {
+  if (!deliveryPromotion) return;
+  const { backupDirectory } = deliveryPromotion;
+  deliveryPromotion = null;
+  try { fs.rmSync(backupDirectory, { recursive: true, force: true }); }
+  catch (error) { console.warn(`Delivery committed; backup cleanup failed at ${backupDirectory}: ${error.message}`); }
 };
 
 const reconciliationPath = path.join(jobRoot, "state", "transcript-reconciliation.json");
@@ -110,29 +217,23 @@ const checkReconciliation = (allowPending, expectedMedia = null) => {
   );
 };
 
-const lockRoughCutMedia = (artifactPath, { audit = false, trimPlanAudit = false, requirePromotion = false } = {}) => {
+const lockRoughCutMedia = (artifactPath, { audit = false, requirePromotion = false } = {}) => {
   const mediaPath = path.relative(jobRoot, artifactPath);
   const trimPlanPath = path.join(jobRoot, "state", "trim-plan.json");
 
   probeReviewVideo(artifactPath, "Rough-cut export");
-  const mediaSha256 = sha256File(artifactPath);
-  const projectForLock = readJson(path.join(jobRoot, "state", "project.json"));
-  if (workflow.sourceTranscriptSha256 || projectForLock.roughCutEngine !== "chatcut") assertSourceTranscriptLock();
+  assertSourceTranscriptLock();
 
   if (requirePromotion) {
     const project = readJson(path.join(jobRoot, "state", "project.json"));
     const recorded = project.mediaArtifacts?.roughcut;
-    if (recorded?.path !== mediaPath || recorded.sha256 !== mediaSha256) {
+    if (recorded?.path !== mediaPath || recorded.sha256 !== sha256File(artifactPath)) {
       throw new Error("Rough-cut export must be promoted after the ChatCut review");
     }
   }
 
   if (audit) {
-    const project = readJson(path.join(jobRoot, "state", "project.json"));
-    checkReconciliation(true, project.sourceVideo);
-  }
-
-  if (trimPlanAudit) {
+    checkReconciliation(true, mediaPath);
     runCheck("finalize-trim-plan.mjs", [
       trimPlanPath,
       artifactPath,
@@ -144,7 +245,7 @@ const lockRoughCutMedia = (artifactPath, { audit = false, trimPlanAudit = false,
   }
 
   workflow.authoritativeMediaPath = mediaPath;
-  workflow.authoritativeMediaSha256 = mediaSha256;
+  workflow.authoritativeMediaSha256 = sha256File(artifactPath);
   workflow.trimPlanSha256 = sha256File(trimPlanPath);
 };
 
@@ -161,13 +262,22 @@ const lockSourceTranscript = (transcriptPath) => {
     return;
   }
   if (fs.existsSync(sourceTranscriptPath)) {
-    if (sha256File(sourceTranscriptPath) !== sha256File(transcriptPath)) {
-      throw new Error("Unbound source transcript differs from the incoming transcript");
-    }
-  } else {
-    writeJsonAtomic(sourceTranscriptPath, readJson(transcriptPath));
+    throw new Error("Unbound source transcript already exists");
   }
+  writeJsonAtomic(sourceTranscriptPath, readJson(transcriptPath));
   workflow.sourceTranscriptSha256 = sha256File(sourceTranscriptPath);
+};
+
+const recordCreativeAuthorities = () => {
+  const confirmationPath = path.join(jobRoot, "state", "creative-confirmation.json");
+  const confirmation = readJson(confirmationPath);
+  confirmation.authorities = computeCreativeAuthorities(jobRoot, workflow.captionMode);
+  writeJsonAtomic(confirmationPath, confirmation);
+};
+const requiresCadenceCreativeLock = () => {
+  if (hasActiveSubtitleMgCadence(jobRoot, workflow.captionMode)) return true;
+  const confirmationPath = path.join(jobRoot, "state", "creative-confirmation.json");
+  return fs.existsSync(confirmationPath) && Boolean(readJson(confirmationPath).authorities?.designSystem);
 };
 
 const assertJobArtifact = (relativePath, expectedDirectory) => {
@@ -200,7 +310,7 @@ const validateChatcutRoughCutRecord = (recordedArtifactPath) => {
 const chatcutRoughCutArtifact = (relativePath) => relativePath === "state/chatcut-roughcut.json";
 
 const probeReviewVideo = (videoPath, label) => {
-  const probe = spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-show_entries", "stream=codec_type,width,height,r_frame_rate,duration,start_time", "-of", "json", videoPath], { encoding: "utf8" });
+  const probe = spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-show_entries", "stream=codec_type,width,height,r_frame_rate,duration", "-of", "json", videoPath], { encoding: "utf8" });
   if (probe.status !== 0) throw new Error(`${label} is not a readable media file`);
   const result = JSON.parse(probe.stdout || "{}");
   const duration = Number(result.format?.duration);
@@ -211,11 +321,11 @@ const probeReviewVideo = (videoPath, label) => {
   const audio = result.streams.find((stream) => stream.codec_type === "audio");
   const [numerator, denominator] = String(video?.r_frame_rate ?? "0/1").split("/").map(Number);
   const fps = denominator ? numerator / denominator : 0;
-  const videoStart = video?.start_time == null ? Number.NaN : Number(video.start_time);
-  const audioStart = audio?.start_time == null ? Number.NaN : Number(audio.start_time);
-  if (Number.isFinite(videoStart) && Number.isFinite(audioStart)
-    && Math.abs(videoStart - audioStart) > Math.max(0.1, 2 / Math.max(fps, 1))) {
-    throw new Error(`${label} audio and video stream start offsets differ`);
+  const videoDuration = Number(video?.duration);
+  const audioDuration = Number(audio?.duration);
+  if (Number.isFinite(videoDuration) && Number.isFinite(audioDuration)
+    && Math.abs(videoDuration - audioDuration) > Math.max(0.1, 2 / Math.max(fps, 1))) {
+    throw new Error(`${label} audio and video durations differ`);
   }
   return { duration, width: video?.width, height: video?.height, fps };
 };
@@ -227,9 +337,11 @@ const validateRoughCutReview = () => {
   const recordedArtifactPath = assertJobArtifact(recordedArtifact, expectedDirectory);
   if (chatcutRoughCutArtifact(recordedArtifact)) {
     validateChatcutRoughCutRecord(recordedArtifactPath);
-    if (workflow.sourceTranscriptSha256) assertSourceTranscriptLock();
+    assertSourceTranscriptLock();
+    checkRoughCutSelection();
     return;
   }
+  validateFfmpegFallbackEligibility();
   probeReviewVideo(recordedArtifactPath, "Rough cut");
   assertSourceTranscriptLock();
   const trimPlanPath = path.join(jobRoot, "state", "trim-plan.json");
@@ -239,6 +351,51 @@ const validateRoughCutReview = () => {
   if (!workflow.authoritativeMediaSha256 || sha256File(recordedArtifactPath) !== workflow.authoritativeMediaSha256) {
     throw new Error("Rough-cut media changed after the locked edit was produced");
   }
+};
+
+const validateCreativePackage = (approvalNote, approvalActor) => {
+  if (!workflow.captionModeAcknowledged) throw new Error("Caption mode requires explicit user acknowledgement");
+  if (["b-axis-stage", "hybrid"].includes(workflow.visualAxisMode)
+    && (!workflow.visualAxisModeAcknowledged || workflow.visualAxisModeSource !== "user")) {
+    throw new Error("B-axis or hybrid plans require explicit user acknowledgement");
+  }
+  const beatMapPath = path.join(jobRoot, "state", "beat-map.json");
+  runCheck(
+    "check-visual-plan.mjs",
+    [beatMapPath, path.join(jobRoot, "state", "transcript.json"), path.join(jobRoot, "state", "design-system.json"), workflowPath],
+    "Motion plan requires a valid beat map"
+  );
+  checkReconciliation(false);
+  approveCaptionReviewPlan(approvalNote);
+  if (requiresVisualArrangementReview() && isVisualOrchestrationActive(readJson(beatMapPath))) {
+    runCheck(
+      "render-visual-arrangement-doc.mjs",
+      [jobRoot],
+      "Visual arrangement package generation failed"
+    );
+  }
+  recordCreativeAuthorities();
+  const confirmationPath = path.join(jobRoot, "state", "creative-confirmation.json");
+  const proposedConfirmation = readJson(confirmationPath);
+  if (proposedConfirmation.review?.status === "revision-requested") {
+    proposedConfirmation.review = { ...proposedConfirmation.review, status: "ready" };
+    writeJsonAtomic(confirmationPath, proposedConfirmation);
+  }
+  runCheck(
+    "check-creative-confirmation.mjs",
+    [
+      confirmationPath,
+      path.join(jobRoot, "docs", "creative-confirmation.md"),
+      path.join(jobRoot, "state", "beat-map.json"),
+      workflowPath
+    ],
+    "Creative confirmation validation failed"
+  );
+  const confirmation = readJson(confirmationPath);
+  confirmation.review = { status: "approved", actor: approvalActor, decidedAt: now, note: approvalNote };
+  writeJsonAtomic(confirmationPath, confirmation);
+  workflow.creativeConfirmationSha256 = sha256File(confirmationPath);
+  workflow.creativeDocumentFingerprints = computeCreativeDocumentFingerprints(jobRoot, workflow.captionMode);
 };
 
 const recordRoughCutDecision = (status, decision, entryActor, decisionNote) => {
@@ -252,21 +409,30 @@ const recordRoughCutDecision = (status, decision, entryActor, decisionNote) => {
   };
 };
 
+const recordVisualArrangementDecision = (status, decision, entryActor, decisionNote) => {
+  workflow.visualArrangementReviewDecision = decision;
+  workflow.gates["visual-arrangement-review"] = {
+    ...workflow.gates["visual-arrangement-review"],
+    status,
+    decidedAt: now,
+    actor: entryActor,
+    artifact: "docs/creative-confirmation.md",
+    note: decisionNote,
+    revisionId: workflow.revisionId
+  };
+};
+
 const selectAutomaticFallback = (entryActor, decisionNote) => {
   validateRoughCutReview();
   acceptDeferredPreferences("auto");
-  const warning = "Automatic export and validation may take a long time";
+  const warning = "Automatic export and three-threshold checking may take a long time";
   recordRoughCutDecision("automatic-fallback", "automatic-fallback", entryActor, `${decisionNote} ${warning}.`);
   move("rough-cut-export", "automatic-fallback", entryActor);
   console.warn(`${warning}.`);
 };
 const save = () => {
+  if (pendingVisualBaseline) writeJsonAtomic(visualBaselinePath, pendingVisualBaseline);
   saveWorkflow(workflowPath, workflow, now);
-  if (pendingVisualBaseline) {
-    try { writeJsonAtomic(visualBaselinePath, pendingVisualBaseline); }
-    catch { console.warn("Visual revision baseline could not be saved; future revisions will report unavailable prior field values."); }
-  }
-  if (workflow.currentState !== initialState) printStageGuideHint(workflow.currentState);
 };
 
 const invalidateCreativeConfirmation = () => {
@@ -307,6 +473,12 @@ const syncPreferenceArtifacts = (resetDocuments = false) => {
 
 const acceptDeferredPreferences = (decisionSource) => {
   validateActiveReference(workflowPath, workflow);
+  if (!workflow.captionModeAcknowledged && workflow.captionModeSource !== "auto") {
+    throw new Error("Rough-cut approval requires an agent caption-mode recommendation with --note");
+  }
+  if (!workflow.visualAxisModeAcknowledged && workflow.visualAxisModeSource !== "auto") {
+    throw new Error("Rough-cut approval requires an agent visual-axis recommendation with --note");
+  }
   let changed = false;
   if (!workflow.captionModeAcknowledged) {
     workflow.captionModeAcknowledged = true;
@@ -332,35 +504,64 @@ const acceptDeferredPreferences = (decisionSource) => {
   );
 };
 
+const approveCaptionReviewPlan = (approvalNote) => {
+  if (workflow.captionMode !== "subtitles") return;
+  const captionReviewPlanPath = path.join(jobRoot, "captions", "caption-review-plan.json");
+  if (!fs.existsSync(captionReviewPlanPath)) throw new Error("Subtitle plan approval requires captions/caption-review-plan.json");
+  const captionReviewCheck = spawnSync(process.execPath, [path.join(scriptDirectory, "check-caption-review-plan.mjs"), captionReviewPlanPath], { encoding: "utf8" });
+  if (captionReviewCheck.status !== 0) throw new Error(`Subtitle plan approval requires valid semantic cues: ${captionReviewCheck.stderr.trim() || captionReviewCheck.stdout.trim()}`);
+  const captionReviewPlan = readJson(captionReviewPlanPath);
+  captionReviewPlan.status = "approved";
+  captionReviewPlan.approvedAt = now;
+  captionReviewPlan.approvalNote = approvalNote;
+  writeJsonAtomic(captionReviewPlanPath, captionReviewPlan);
+};
+
 if (command === "status") {
   console.log(JSON.stringify(workflow, null, 2));
-  printStageGuideHint(workflow.currentState);
   process.exit(0);
 }
 
 if (command === "verify") {
-  const findings = collectWorkflowDrift(jobRoot, workflow);
-  const settled = ["composition", "render", "complete"].includes(workflow.currentState);
-  if (settled || workflow.currentState === "motion-plan") {
-    findings.push(...collectCreativeAuthorityDrift(jobRoot, workflow));
+  const drift = [...collectWorkflowDrift(jobRoot, workflow), ...collectCreativeAuthorityDrift(jobRoot, workflow)];
+  if (drift.length) {
+    for (const entry of drift) console.error(`Drift: ${entry}`);
+    process.exit(1);
   }
-  if (findings.length === 0) {
-    console.log(`Workflow fingerprints verified: ${workflow.currentState} (revision ${workflow.revisionId})`);
-    process.exit(0);
-  }
-  for (const finding of findings) console.error(`Error: ${finding}`);
-  console.error(`Workflow fingerprints no longer describe the job: ${findings.length} finding(s).`);
-  process.exit(1);
+  console.log("Workflow fingerprints match their recorded artifacts.");
+  process.exit(0);
 }
-
+if (command === "lock-transcript") {
+  if (!["transcription", "rough-cut", "rough-cut-export", "motion-plan"].includes(workflow.currentState)) {
+    throw new Error("Lock the source transcript during transcription or editing");
+  }
+  const transcriptPath = assertJobArtifact("state/transcript.json", "state");
+  const transcript = readJson(transcriptPath);
+  if (!Array.isArray(transcript.segments) || !transcript.segments.length) throw new Error("Source transcript has no segments");
+  // Locking timing never advances the workflow or accepts cover/selection decisions.
+  const alreadyLocked = Boolean(workflow.sourceTranscriptSha256);
+  lockSourceTranscript(transcriptPath);
+  if (!alreadyLocked) {
+    appendHistory("lock-transcript", workflow.currentState, workflow.currentState);
+    save();
+  }
+  console.log("Source transcript locked.");
+  process.exit(0);
+}
 if (command === "set-mode") {
   const mode = positionals[0];
   if (!["review", "auto"].includes(mode)) throw new Error(`Invalid mode: ${mode}`);
+  if (mode === "auto" && options.actor !== "user") throw new Error("Automatic mode requires an explicit --actor user selection");
   const previousMode = workflow.mode;
   workflow.mode = mode;
   appendHistory("set-mode", workflow.currentState, workflow.currentState, actor);
   if (mode === "auto" && workflow.currentState === "rough-cut-review") {
     selectAutomaticFallback("agent", "Automatic mode selected");
+  }
+  if (mode === "auto" && workflow.currentState === "visual-arrangement-review") {
+    validateCreativePackage("Automatic mode selected by user", "agent");
+    recordVisualArrangementDecision("automatic-accepted", "automatic-accepted", "agent", "Automatic mode selected by user");
+    move("composition", "automatic-visual-arrangement-accept", "agent", "docs/creative-confirmation.md");
   }
   save();
   console.log(`Mode changed: ${previousMode} → ${workflow.mode}; current state: ${workflow.currentState}`);
@@ -372,13 +573,16 @@ if (command === "set-caption-mode") {
   const previousCaptionMode = workflow.captionMode;
   const previousState = workflow.currentState;
   const isRecommendation = actor === "agent";
+  if (isRecommendation && !note) throw new Error("Agent caption-mode recommendations require --note");
   workflow.captionMode = captionMode;
   workflow.captionModeSource = isRecommendation ? "auto" : "user";
   workflow.captionModeAcknowledged = !isRecommendation;
-  const planningOrLater = ["motion-plan", "composition", "render", "complete"].includes(previousState);
+  const planningOrLater = ["motion-plan", "visual-arrangement-review", "composition", "render", "complete"].includes(previousState);
   const confirmationPath = path.join(jobRoot, "state", "creative-confirmation.json");
   syncPreferenceArtifacts(!planningOrLater);
-  if (previousCaptionMode !== captionMode && planningOrLater) {
+  const captionModeChanged = previousCaptionMode !== captionMode;
+  if (captionModeChanged) enableVisualArrangementReviewForMotionPlan(workflow);
+  if (captionModeChanged && planningOrLater) {
     beginWorkflowRevision(workflow);
     invalidateCreativeConfirmation();
     workflow.creativeConfirmationSha256 = null;
@@ -403,13 +607,16 @@ if (command === "set-axis-mode") {
   const previousAxisMode = workflow.visualAxisMode;
   const previousState = workflow.currentState;
   const isRecommendation = actor === "agent";
+  if (isRecommendation && !note) throw new Error("Agent visual-axis recommendations require --note");
   workflow.visualAxisMode = axisMode;
   workflow.visualAxisModeSource = isRecommendation ? "auto" : "user";
   workflow.visualAxisModeAcknowledged = !isRecommendation;
   const confirmationPath = path.join(jobRoot, "state", "creative-confirmation.json");
   syncPreferenceArtifacts();
-  const planningOrLater = ["motion-plan", "composition", "render", "complete"].includes(previousState);
-  if (previousAxisMode !== axisMode && planningOrLater) {
+  const planningOrLater = ["motion-plan", "visual-arrangement-review", "composition", "render", "complete"].includes(previousState);
+  const axisModeChanged = previousAxisMode !== axisMode;
+  if (axisModeChanged) enableVisualArrangementReviewForMotionPlan(workflow);
+  if (axisModeChanged && planningOrLater) {
     beginWorkflowRevision(workflow);
     invalidateCreativeConfirmation();
     workflow.creativeConfirmationSha256 = null;
@@ -429,7 +636,7 @@ if (command === "set-axis-mode") {
   process.exit(0);
 }
 if (command === "replan") {
-  if (!["motion-plan", "composition", "render"].includes(workflow.currentState)) {
+  if (!["motion-plan", "visual-arrangement-review", "composition", "render"].includes(workflow.currentState)) {
     throw new Error(`State ${workflow.currentState} cannot return to motion-plan`);
   }
   if (!note) throw new Error("Replan requires --note");
@@ -438,11 +645,95 @@ if (command === "replan") {
   invalidateCreativeConfirmation();
   workflow.creativeConfirmationSha256 = null;
   workflow.creativeDocumentFingerprints = null;
+  enableVisualArrangementReviewForMotionPlan(workflow);
   workflow.currentState = "motion-plan";
   workflow.pendingGate = null;
   appendHistory("replan", previousState, "motion-plan", actor);
   save();
   console.log(`Workflow state: ${workflow.currentState}`);
+  process.exit(0);
+}
+if (command === "approve-creative") {
+  if (workflow.mode !== "review" || workflow.currentState !== "motion-plan" || workflow.roughCutReviewDecision !== "manual-approved") {
+    throw new Error("Creative approval requires review-mode motion-plan after a manual rough-cut approval");
+  }
+  if (workflow.gates?.["rough-cut-review"]?.status !== "approved") {
+    throw new Error("Creative approval requires an approved rough-cut review gate");
+  }
+  if (actor !== "agent") throw new Error("Creative approval is an internal Agent action and requires --actor agent");
+  if (!note) throw new Error("Creative approval requires --note");
+  validateCreativePackage(note, actor);
+  appendHistory("approve-creative", workflow.currentState, workflow.currentState, actor);
+  save();
+  console.log("Creative package approved.");
+  process.exit(0);
+}
+if (command === "approve-visual-arrangement") {
+  if (workflow.currentState !== "visual-arrangement-review") throw new Error("Only visual arrangement review can be approved");
+  if (!requiresVisualArrangementReview()) throw new Error("Visual arrangement review is not required for this legacy workflow");
+  if (options.actor !== "user") throw new Error("Visual arrangement approval requires actor user");
+  if (!isNonemptyString(note)) throw new Error("Visual arrangement approval requires --note");
+  // Validate the frozen package first; approval must never rebind a changed plan.
+  assertCreativeAuthorities(jobRoot, workflow);
+  checkReconciliation(false);
+  recordVisualArrangementDecision("approved", "manual-approved", actor, note);
+  move("composition", "approve-visual-arrangement", actor);
+  save();
+  console.log("Visual arrangement approved.");
+  process.exit(0);
+}
+if (command === "revise-visual-arrangement") {
+  if (workflow.currentState !== "visual-arrangement-review") throw new Error("Only visual arrangement review can be revised");
+  if (!requiresVisualArrangementReview()) throw new Error("Visual arrangement review is not required for this legacy workflow");
+  if (options.actor !== "user") throw new Error("Visual arrangement revision requires actor user");
+  if (!isNonemptyString(note)) throw new Error("Visual arrangement revision requires --note");
+  const previousState = workflow.currentState;
+  beginWorkflowRevision(workflow);
+  invalidateCreativeConfirmation();
+  workflow.creativeConfirmationSha256 = null;
+  workflow.creativeDocumentFingerprints = null;
+  workflow.visualPlanSha256 = null;
+  resetVisualArrangementReview(workflow);
+  workflow.currentState = "motion-plan";
+  workflow.pendingGate = null;
+  appendHistory("revise-visual-arrangement", previousState, "motion-plan", actor);
+  save();
+  console.log(`Workflow state: ${workflow.currentState}`);
+  process.exit(0);
+}
+if (command === "approve-cover") {
+  if (actor !== "user") throw new Error("Cover approval requires --actor user");
+  if (!note) throw new Error("Cover approval requires --note");
+  checkCover(true);
+  const coverPath = path.join(jobRoot, "state", "cover.json");
+  const cover = readJson(coverPath);
+  cover.status = "approved";
+  cover.output.sha256 = sha256File(path.join(jobRoot, "output", "cover.png"));
+  cover.review = { status: "approved", actor, decidedAt: now, note };
+  writeJsonAtomic(coverPath, cover);
+  checkCover();
+  workflow.coverReviewDecision = "approved";
+  appendHistory("approve-cover", workflow.currentState, workflow.currentState, actor);
+  save();
+  console.log("Cover approved.");
+  process.exit(0);
+}
+if (command === v1FallbackWaiverCommand) {
+  if (workflow.currentState !== "rough-cut") throw new Error("V1 fallback waiver is only available at rough-cut before fallback");
+  if (options.actor !== "user") throw new Error("V1 fallback waiver requires --actor user");
+  if (!note) throw new Error("V1 fallback waiver requires --note");
+  if (workflow.roughCutSelectionPolicyOrigin !== roughCutSelectionPolicy) {
+    throw new Error("V1 fallback waiver requires a V1-origin rough-cut workflow");
+  }
+  const project = readJson(path.join(jobRoot, "state", "project.json"));
+  if (project.roughCutEngine !== "ffmpeg-fallback") {
+    throw new Error("V1 fallback waiver requires project.roughCutEngine=ffmpeg-fallback");
+  }
+  workflow.roughCutSelectionPolicy = null;
+  workflow.roughCutSelectionFallbackWaiver = { actor, waivedAt: now, reason: note };
+  appendHistory(v1FallbackWaiverCommand, workflow.currentState, workflow.currentState, actor);
+  save();
+  console.log("V1 rough-cut selection waived for ffmpeg fallback.");
   process.exit(0);
 }
 if (command === "fallback-auto") {
@@ -463,25 +754,13 @@ if (command === "reopen") {
     delivery: "render"
   };
   const target = targets[scope];
+  if (workflow.currentState !== "complete") throw new Error("Only a completed job can be reopened");
   if (!target) throw new Error("Reopen scope must be rough-cut, motion-plan, composition, or delivery");
-  const activeReviewCompositionRevision = scope === "composition"
-    && ["composition", "render"].includes(workflow.currentState)
-    && workflow.mode === "review"
-    && workflow.roughCutReviewDecision !== "automatic-fallback";
-  if (workflow.currentState !== "complete" && !activeReviewCompositionRevision) {
-    throw new Error("Only a completed job or an active review-mode composition/render revision can be reopened");
-  }
   if (actor !== "user") throw new Error("Reopen requires --actor user");
   if (!note) throw new Error("Reopen requires --note");
   const previousState = workflow.currentState;
+  if (["rough-cut", "motion-plan"].includes(scope)) enableVisualArrangementReviewForMotionPlan(workflow);
   beginWorkflowRevision(workflow, { invalidateVisualPlan: ["rough-cut", "motion-plan"].includes(scope) });
-  if (scope === "composition") {
-    const beatMapPath = path.join(jobRoot, "state", "beat-map.json");
-    // Older jobs can establish a baseline only while their recorded plan still matches.
-    if (fs.existsSync(beatMapPath) && workflow.visualPlanSha256 === sha256File(beatMapPath)) {
-      pendingVisualBaseline = { sha256: workflow.visualPlanSha256, beatMap: readJson(beatMapPath) };
-    }
-  }
   if (scope === "rough-cut") {
     const project = readJson(path.join(jobRoot, "state", "project.json"));
     workflow.authoritativeMediaPath = project.sourceVideo;
@@ -509,59 +788,18 @@ if (command === "reopen") {
   console.log(`Workflow reopened at ${target}: ${scope}`);
   process.exit(0);
 }
-// Hand off an editable cut without reconstructing its editing history.
-if (command === "review-cut") {
-  if (!["intake", "transcription", "rough-cut"].includes(workflow.currentState)) {
-    throw new Error("review-cut requires intake, transcription or rough-cut; use revise/reopen for a settled cut");
-  }
-  const project = readJson(path.join(jobRoot, "state", "project.json"));
-  assertRegularContainedFile(path.join(jobRoot, "input"), path.resolve(jobRoot, project.sourceVideo), "Source media");
-  if (workflow.sourceTranscriptSha256) assertSourceTranscriptLock();
-  const projectId = options["project-id"];
-  const timelineId = options["timeline-id"];
-  if (typeof projectId !== "string" || !projectId.trim() || typeof timelineId !== "string" || !timelineId.trim()) {
-    throw new Error("review-cut requires --project-id <id> --timeline-id <id>");
-  }
-  writeJsonAtomic(path.join(jobRoot, artifact), {
-    schemaVersion: "1.0.0", source: "chatcut", projectId,
-    timelineIds: [timelineId], activeTimelineId: timelineId, recordedAt: now,
-    ...(note ? { note } : {})
-  });
-  project.roughCutEngine = "chatcut";
-  if (project.mediaArtifacts?.roughcut) delete project.mediaArtifacts.roughcut;
-  writeJsonAtomic(path.join(jobRoot, "state", "project.json"), project);
-  workflow.authoritativeMediaPath = null;
-  workflow.authoritativeMediaSha256 = null;
-  workflow.trimPlanSha256 = null;
-  workflow.roughCutReviewDecision = "pending";
-  move("rough-cut-review", "review-cut");
-  workflow.reconciliationReturnState = null;
-  if (workflow.mode === "auto") selectAutomaticFallback("agent", "Automatic mode selected");
-  save();
-  console.log(`${workflow.mode === "auto" ? "Automatic cut recorded" : "Ready for listening"}: https://app.chatcut.io/editor/${encodeURIComponent(projectId)}`);
-  process.exit(0);
-}
-
-if (command === "lock-transcript") {
-  if (!["transcription", "rough-cut", "rough-cut-export", "motion-plan"].includes(workflow.currentState)) {
-    throw new Error("Lock the source transcript during editing or after the rough-cut decision");
-  }
-  const transcriptPath = assertJobArtifact("state/transcript.json", "state");
-  const transcript = readJson(transcriptPath);
-  if (!Array.isArray(transcript.segments) || !transcript.segments.length) throw new Error("Source transcript has no segments");
-  lockSourceTranscript(transcriptPath);
-  appendHistory("lock-transcript", workflow.currentState, workflow.currentState);
-  save();
-  console.log("Source transcript locked; reconciliation is generated during motion planning.");
-  process.exit(0);
-}
-
 const currentStage = stages[workflow.currentState];
 if (!currentStage) throw new Error(`Unknown current state: ${workflow.currentState}`);
 
+try {
 if (command === "advance") {
   if (currentStage.terminal) throw new Error("Workflow is already complete");
-  if (currentStage.gate) throw new Error(`Gate ${workflow.currentState} requires approve or revise`);
+  if (currentStage.gate) {
+    if (workflow.currentState === "visual-arrangement-review") {
+      throw new Error("Visual arrangement review requires user approval or revision");
+    }
+    throw new Error(`Gate ${workflow.currentState} requires approve or revise`);
+  }
   if (workflow.currentState === "intake") {
     const projectPath = path.join(jobRoot, "state", "project.json");
     if (!fs.existsSync(projectPath)) throw new Error("Project state is missing");
@@ -581,12 +819,15 @@ if (command === "advance") {
       composition: "hyperframes",
       render: "output"
     }[workflow.currentState];
-    const artifactPath = workflow.currentState === "composition"
-      ? path.resolve(jobRoot, artifact)
-      : assertJobArtifact(artifact, expectedDirectory);
+    const artifactPath = assertJobArtifact(artifact, expectedDirectory);
     if (workflow.currentState === "transcription") {
       const transcriptPath = path.join(jobRoot, "state", "transcript.json");
       if (artifactPath !== transcriptPath) throw new Error("Transcription must use state/transcript.json");
+      if ((workflow.reconciliationReturnState ?? currentStage.next) === "rough-cut") {
+        if (workflow.coverReviewDecision !== "approved") throw new Error("Rough-cut entry requires an approved cover");
+        checkCover();
+      }
+      checkReconciliation(true);
       lockSourceTranscript(transcriptPath);
     }
     if (workflow.currentState === "rough-cut") {
@@ -596,7 +837,8 @@ if (command === "advance") {
         const project = readJson(projectPath);
         if (project.roughCutEngine !== "chatcut") throw new Error("ChatCut rough-cut review requires project.roughCutEngine=chatcut");
         if (record.timelineIds.length === 0) throw new Error("ChatCut rough-cut review requires at least one timeline");
-        if (workflow.sourceTranscriptSha256) assertSourceTranscriptLock();
+        assertSourceTranscriptLock();
+        checkRoughCutSelection();
         if (project.mediaArtifacts?.roughcut) {
           delete project.mediaArtifacts.roughcut;
           writeJsonAtomic(projectPath, project);
@@ -606,6 +848,7 @@ if (command === "advance") {
         workflow.trimPlanSha256 = null;
       } else {
         if (path.resolve(jobRoot, artifact) !== path.join(jobRoot, "roughcut", "a-roll.mp4")) throw new Error("Rough cut must use roughcut/a-roll.mp4 or state/chatcut-roughcut.json");
+        validateFfmpegFallbackEligibility();
         lockRoughCutMedia(artifactPath);
       }
       workflow.roughCutReviewDecision = "pending";
@@ -617,76 +860,108 @@ if (command === "advance") {
       if (!["automatic-fallback", "manual-approved"].includes(workflow.roughCutReviewDecision)) {
         throw new Error("Rough-cut export requires manual approval or an explicit automatic fallback");
       }
-      const reviewArtifact = workflow.gates?.["rough-cut-review"]?.artifact;
-      const isChatCutRoughCut = chatcutRoughCutArtifact(reviewArtifact);
-      const project = readJson(path.join(jobRoot, "state", "project.json"));
       lockRoughCutMedia(artifactPath, {
-        audit: workflow.roughCutReviewDecision === "automatic-fallback" && !isChatCutRoughCut,
-        trimPlanAudit: workflow.roughCutReviewDecision === "automatic-fallback" && project.roughCutEngine === "ffmpeg-fallback" && !isChatCutRoughCut,
-        requirePromotion: isChatCutRoughCut
+        audit: workflow.roughCutReviewDecision === "automatic-fallback",
+        requirePromotion: chatcutRoughCutArtifact(workflow.gates?.["rough-cut-review"]?.artifact)
       });
     }
     if (workflow.currentState === "motion-plan") {
-      if (workflow.sourceTranscriptSha256) assertSourceTranscriptLock();
+      if (!workflow.captionModeAcknowledged || !workflow.visualAxisModeAcknowledged || !workflow.referenceScriptAcknowledged) {
+        throw new Error("Motion planning requires preferences accepted with the locked rough cut");
+      }
+      const motionPlan = fs.readFileSync(artifactPath, "utf8");
+      const tableRows = motionPlan.split("\n").filter((line) => /^\s*\|.*\|\s*$/.test(line));
+      const hasCaptionMode = /(?:Caption mode|当前字幕模式).*?(?:motion-copy|subtitles)/i.test(motionPlan);
+      if (tableRows.length < 3) throw new Error("Motion plan must contain at least one storyboard row");
+      if (!hasCaptionMode) throw new Error("Motion plan must state the active caption mode");
       const confirmationPath = path.join(jobRoot, "state", "creative-confirmation.json");
       const confirmationDocPath = path.join(jobRoot, "docs", "creative-confirmation.md");
       const beatMapPath = path.join(jobRoot, "state", "beat-map.json");
       if (!fs.existsSync(confirmationPath) || !fs.existsSync(confirmationDocPath)) {
         throw new Error("Motion plan requires a creative confirmation package");
       }
+      const proposedConfirmation = readJson(confirmationPath);
+      if (!workflow.visualAxisModeAcknowledged) {
+        workflow.visualAxisMode = proposedConfirmation.visualAxisMode;
+        workflow.visualAxisModeSource = "default";
+      }
       if (!fs.existsSync(beatMapPath)) throw new Error("Motion plan requires state/beat-map.json");
-      // Keep the baseline for explicit diagnostics and revision history; it is
-      // not a delivery gate. Structural caption checks and the composition
-      // build validate the artifacts that directly affect the rendered video.
-      workflow.visualPlanSha256 = sha256File(beatMapPath);
-      pendingVisualBaseline = { sha256: workflow.visualPlanSha256, beatMap: readJson(beatMapPath) };
+      const nextBeatMapSha256 = sha256File(beatMapPath);
+      let baseline = null;
+      if (fs.existsSync(visualBaselinePath)) {
+        assertRegularContainedFile(path.join(jobRoot, "state"), visualBaselinePath, "Visual plan baseline");
+        baseline = readJson(visualBaselinePath);
+      }
+      const beatMap = readJson(beatMapPath);
+      if (baseline?.sha256 && baseline.sha256 !== nextBeatMapSha256 && baseline.beatMap) {
+        appendHistory("visual-plan-change", "motion-plan", "motion-plan");
+        Object.assign(workflow.history.at(-1), {
+          beforeSha256: baseline.sha256, afterSha256: nextBeatMapSha256,
+          baselineAvailable: true, changes: visualPlanChanges(baseline.beatMap, beatMap)
+        });
+      }
+      workflow.visualPlanSha256 = nextBeatMapSha256;
+      pendingVisualBaseline = { sha256: nextBeatMapSha256, beatMap };
+      if (fullAuditRequested || requiresVisualArrangementReview()) {
+        validateCreativePackage(
+          fullAuditRequested ? "Automatic full-audit validation" : "Visual arrangement package validated",
+          "agent"
+        );
+      } else if (requiresCadenceCreativeLock()) {
+        runCheck("check-visual-plan.mjs", [beatMapPath, path.join(jobRoot, "state", "transcript.json"), path.join(jobRoot, "state", "design-system.json"), workflowPath], "Motion plan requires a valid beat map");
+        assertCreativeAuthorities(jobRoot, workflow);
+      }
     }
     if (workflow.currentState === "composition") {
-      const generatedCompositionPath = path.join(jobRoot, "hyperframes", "index.html");
-      if (artifactPath !== generatedCompositionPath) {
-        throw new Error("Composition advance requires hyperframes/index.html");
+      // Gate and hash checks precede all composition writes.
+      if (requiresVisualArrangementReview()) assertCompositionReady(jobRoot, workflow);
+      else if (fullAuditRequested || requiresCadenceCreativeLock()) assertCreativeAuthorities(jobRoot, workflow);
+      const built = buildComposition(path.join(jobRoot, "hyperframes"));
+      if (path.resolve(artifactPath) !== path.resolve(built.outputPath)) {
+        throw new Error("Composition advance requires the deterministic hyperframes/index.html build artifact");
       }
-      const beatMapPath = path.join(jobRoot, "state", "beat-map.json");
-      if (!fs.existsSync(beatMapPath)) throw new Error("Composition requires state/beat-map.json");
-      const beatMapSha256 = sha256File(beatMapPath);
-      buildComposition(path.join(jobRoot, "hyperframes"));
-      assertRegularContainedFile(path.join(jobRoot, "hyperframes"), generatedCompositionPath, "Built composition");
-      const confirmationPath = path.join(jobRoot, "state", "creative-confirmation.json");
-      const confirmation = readJson(confirmationPath);
-      confirmation.authorities = computeCreativeAuthorities(jobRoot, workflow.captionMode);
-      writeJsonAtomic(confirmationPath, confirmation);
-      if (workflow.creativeConfirmationSha256) workflow.creativeConfirmationSha256 = sha256File(confirmationPath);
-      workflow.creativeDocumentFingerprints = computeCreativeDocumentFingerprints(jobRoot, workflow.captionMode);
-      const beatMap = readJson(beatMapPath);
-      if (workflow.visualPlanSha256 !== beatMapSha256) {
-        let baseline = null;
-        try { baseline = readJson(visualBaselinePath); } catch { /* Legacy job or missing optional baseline. */ }
-        const baselineAvailable = Boolean(workflow.visualPlanSha256 && baseline?.sha256 === workflow.visualPlanSha256
-          && Array.isArray(baseline?.beatMap?.beats)
-          && baseline.beatMap.beats.every((beat) => beat && typeof beat.id === "string"));
-        const changes = baselineAvailable ? visualPlanChanges(baseline.beatMap, beatMap) : null;
-        if (!baselineAvailable || changes.length) {
-          appendHistory("visual-plan-change", "composition", "composition");
-          Object.assign(workflow.history.at(-1), {
-            beforeSha256: workflow.visualPlanSha256,
-            afterSha256: beatMapSha256,
-            baselineAvailable,
-            changes,
-            requestNote: workflow.history.findLast((entry) => entry.action === "reopen" && entry.revisionId === workflow.revisionId)?.note ?? null
-          });
-          console.log(baselineAvailable
-            ? `Visual revision recorded: ${changes.map((change) => `${change.beatId ?? "plan"} (${change.change}: ${Object.keys(change.fields ?? {}).join(", ")})`).join("; ")}`
-            : "Visual revision recorded: prior field values unavailable for this older job; current baseline saved.");
+      if (requiresVisualArrangementReview()) {
+        if (!["manual-approved", "automatic-accepted"].includes(workflow.visualArrangementReviewDecision)) {
+          throw new Error("Composition requires approved visual arrangement review");
         }
+        assertCreativeAuthorities(jobRoot, workflow);
+        checkReconciliation(false);
+      } else if (fullAuditRequested || requiresCadenceCreativeLock()) {
+        assertCreativeAuthorities(jobRoot, workflow);
+        checkReconciliation(false);
       }
-      pendingVisualBaseline = { sha256: beatMapSha256, beatMap };
-      workflow.visualPlanSha256 = beatMapSha256;
     }
     if (workflow.currentState === "render") {
+      checkCover();
+      const canonicalDeliveryPath = path.join(jobRoot, "output", "final.mp4");
       const delivery = probeReviewVideo(artifactPath, "Final delivery");
+      checkTitles(artifactPath);
+      const receiptPath = `${artifactPath}.render.json`;
+      if (fullAuditRequested && !fs.existsSync(receiptPath)) {
+        throw new Error("Automatic delivery requires the render receipt produced by HyperFrames");
+      }
+      if (artifactPath === canonicalDeliveryPath) {
+        if (workflow.lastKnownGoodDelivery && sha256File(artifactPath) !== workflow.lastKnownGoodDelivery.sha256) {
+          throw new Error("A delivery revision must render to output/final.candidate.mp4 before replacing the last known-good file");
+        }
+      } else {
+        if (path.basename(artifactPath) !== "final.candidate.mp4") {
+          throw new Error("A delivery revision must use output/final.candidate.mp4");
+        }
+        if (fs.existsSync(receiptPath)) assertRegularContainedFile(jobRoot, receiptPath, "Candidate render receipt");
+        beginDeliveryPromotion(artifactPath, receiptPath, canonicalDeliveryPath);
+        fs.renameSync(artifactPath, canonicalDeliveryPath);
+        if (fs.existsSync(receiptPath)) {
+          fs.renameSync(receiptPath, `${canonicalDeliveryPath}.render.json`);
+        } else {
+          // A review-mode delivery without a receipt must not retain the old video's receipt.
+          fs.rmSync(`${canonicalDeliveryPath}.render.json`, { force: true });
+        }
+        promoteTitleSourceDelivery("output/final.candidate.mp4", "output/final.mp4");
+      }
       workflow.lastKnownGoodDelivery = {
-        path: path.relative(jobRoot, artifactPath).split(path.sep).join("/"),
-        sha256: sha256File(artifactPath),
+        path: "output/final.mp4",
+        sha256: sha256File(canonicalDeliveryPath),
         validatedAt: now
       };
       if (!(delivery.duration > 0)) throw new Error("Final delivery has no positive duration");
@@ -701,7 +976,15 @@ if (command === "advance") {
     nextState = workflow.reconciliationReturnState;
   }
   if (workflow.currentState === "transcription") workflow.reconciliationReturnState = null;
-  if (workflow.currentState === "rough-cut" && workflow.mode === "auto") {
+  if (workflow.currentState === "motion-plan" && requiresVisualArrangementReview()) {
+    if (workflow.mode === "auto") {
+      recordVisualArrangementDecision("automatic-accepted", "automatic-accepted", "agent", "Automatic mode selected");
+      move("composition", "automatic-visual-arrangement-accept", "agent", "docs/creative-confirmation.md");
+    } else {
+      workflow.visualArrangementReviewDecision = "pending";
+      move("visual-arrangement-review", "advance", actor, "docs/creative-confirmation.md");
+    }
+  } else if (workflow.currentState === "rough-cut" && workflow.mode === "auto") {
     move("rough-cut-review", "advance");
     selectAutomaticFallback("agent", "Automatic mode selected");
   } else {
@@ -709,12 +992,11 @@ if (command === "advance") {
   }
 } else if (command === "approve") {
   if (workflow.currentState !== "rough-cut-review") throw new Error("Only the ChatCut rough-cut review can be approved");
+  if (!note) throw new Error("Rough-cut review approval requires --note");
   if (workflow.mode === "review" && actor !== "user") throw new Error("Review-mode approval requires actor user");
   validateRoughCutReview();
-  // Recheck only the supplied immutable reference snapshot at its consumption
-  // boundary; no preference acknowledgement is required for the default none.
-  validateActiveReference(workflowPath, workflow);
-  recordRoughCutDecision("approved", "manual-approved", actor, note || "User approved the complete rough cut");
+  acceptDeferredPreferences("user");
+  recordRoughCutDecision("approved", "manual-approved", actor, note);
   move("rough-cut-export", "approve");
 } else if (command === "revise") {
   if (workflow.currentState !== "rough-cut-review") throw new Error("Only the ChatCut rough-cut review can be revised");
@@ -727,10 +1009,10 @@ if (command === "advance") {
   throw new Error(`Unknown command: ${command}`);
 }
 save();
+commitDeliveryPromotion();
+} catch (error) {
+  try { rollbackDeliveryPromotion(); }
+  catch (rollbackError) { throw new AggregateError([error, rollbackError], "Delivery promotion failed and rollback was incomplete"); }
+  throw error;
+}
 console.log(`Workflow state: ${workflow.currentState}`);
-if (command === "advance" && workflow.currentState === "complete") {
-  console.log(`Final delivery: ${workflow.lastKnownGoodDelivery.path}`);
-}
-if (workflow.currentState === "rough-cut-review") {
-  console.log("Deliver the ChatCut project link and current duration now; report any skipped operation, then wait for the user's listening decision.");
-}
