@@ -1,14 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { buildComposition } from "./build-composition.mjs";
+import { assertCaptionSequence, frameWindowTiming } from "./frame-window-utils.mjs";
 
-const [captionsPath, compositionPath, designSystemPath] = process.argv.slice(2);
-if (!captionsPath || !compositionPath || !designSystemPath) {
-  console.error("Usage: node install-captions.mjs <captions.json> <hyperframes-index.html> <design-system.json>");
+const [captionsPath, compositionPath, designSystemPath, ...flags] = process.argv.slice(2);
+if (!captionsPath || !compositionPath || !designSystemPath || flags.some((flag) => flag !== "--defer-build")) {
+  console.error("Usage: node install-captions.mjs <captions.json> <hyperframes-index.html> <design-system.json> [--defer-build]");
   process.exit(64);
 }
 
 const captions = JSON.parse(fs.readFileSync(captionsPath, "utf8"));
+assertCaptionSequence(captions.cues);
 const designSystem = JSON.parse(fs.readFileSync(designSystemPath, "utf8"));
 const templateCandidate = path.join(path.dirname(compositionPath), "index.template.html");
 const authoredCompositionPath = path.basename(compositionPath) === "index.html" && fs.existsSync(templateCandidate)
@@ -49,12 +51,23 @@ const customProperties = [
 ].join(";");
 
 const layers = captions.cues.map((cue, index) => {
-  const duration = Number((cue.end - cue.start).toFixed(6));
+  const { start, duration } = frameWindowTiming(cue, captions.source?.fps);
+  if (!Array.isArray(cue.lines) || cue.lines.length !== 1 || typeof cue.lines[0] !== "string"
+    || !cue.lines[0].trim() || /[\r\n]/.test(cue.lines[0])) {
+    throw new Error(`${cue.id}: must contain exactly one rendered line`);
+  }
+  if (cue.fitFontSizePx !== undefined && (!Number.isFinite(cue.fitFontSizePx)
+    || cue.fitFontSizePx < style.minimumFontSizePx || cue.fitFontSizePx > style.fontSizePx)) {
+    throw new Error(`${cue.id}: fitted caption font size is outside the design system range`);
+  }
+  const cueProperties = Number.isFinite(cue.fitFontSizePx)
+    ? `${customProperties};--caption-size:${cue.fitFontSizePx}px`
+    : customProperties;
   const lines = cue.lines
     .map((line) => `          <p class="motion-caption-line" data-layout-guard="canvas">${escapeHtml(line)}</p>`)
     .join("\n");
   return [
-    `      <section id="motion-caption-${String(index + 1).padStart(4, "0")}" class="clip motion-caption-layer" data-motion-protected="caption" data-caption-id="${escapeHtml(cue.id)}" data-caption-page-id="${escapeHtml(cue.sourcePageId)}" data-caption-start-frame="${cue.startFrame}" data-caption-end-frame="${cue.endFrame}" data-start="${cue.start}" data-duration="${duration}" data-track-index="80" style="${customProperties}">`,
+    `      <section id="motion-caption-${String(index + 1).padStart(4, "0")}" class="clip motion-caption-layer" data-motion-protected="caption" data-caption-id="${escapeHtml(cue.id)}" data-caption-page-id="${escapeHtml(cue.sourcePageId)}" data-caption-start-frame="${cue.startFrame}" data-caption-end-frame="${cue.endFrame}" data-start="${start}" data-duration="${duration}" data-track-index="80" style="${cueProperties}">`,
     lines,
     "      </section>"
   ].join("\n");
@@ -67,5 +80,5 @@ if (Number.isFinite(style.bottomOffsetRatio)) {
 }
 updated = updated.replace(/data-caption-font-weight=["'][0-9]+["']/, `data-caption-font-weight="${style.fontWeight ?? 400}"`);
 fs.writeFileSync(authoredCompositionPath, updated);
-if (authoredCompositionPath !== compositionPath) buildComposition(path.dirname(compositionPath));
+if (authoredCompositionPath !== compositionPath && !flags.includes("--defer-build")) buildComposition(path.dirname(compositionPath));
 console.log(`Installed ${captions.cues.length} caption cue(s) into ${authoredCompositionPath}`);

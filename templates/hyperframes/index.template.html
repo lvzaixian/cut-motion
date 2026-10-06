@@ -70,7 +70,7 @@
         const rootRect = root.getBoundingClientRect();
         const visible = (element) => {
           const style = getComputedStyle(element);
-          const rect = element.getBoundingClientRect();
+          const rect = clippedContentRect(element, root);
           return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity) > 0.01 && rect.width > 0 && rect.height > 0;
         };
         for (const element of document.querySelectorAll('[data-motion-surface="container"][data-border-policy="none"]')) {
@@ -229,14 +229,14 @@
             if (element.closest('[data-motion-surface="container"]') !== surface || !element.textContent.trim()) continue;
             if (!element.closest('[data-collision-unit], [data-motion-role="indicator"]')) units.push(element);
           }
-          if (findContentCollision([...new Set(units)])) throw new Error("motion_contract_content_collision");
+          if (findContentCollision([...new Set(units)], element => clippedContentRect(element, root))) throw new Error("motion_contract_content_collision");
         }
         for (const element of visibleLeaves) {
           if (!element.closest("[data-motion-group]") && !element.closest("[data-motion-protected]")) {
             throw new Error("motion_contract_ungrouped_visual");
           }
           if (!visible(element)) continue;
-          const rect = element.getBoundingClientRect();
+          const rect = clippedContentRect(element, root);
           if (rect.left < rootRect.left - 1 || rect.top < rootRect.top - 1 || rect.right > rootRect.right + 1 || rect.bottom > rootRect.bottom + 1) {
             throw new Error("motion_contract_canvas_overflow");
           }
@@ -255,7 +255,7 @@
         }
         const protectedRects = [...document.querySelectorAll("[data-motion-protected]")].filter(visible).map((element) => element.getBoundingClientRect());
         for (const element of visibleLeaves.filter((candidate) => !candidate.closest("[data-motion-protected]"))) {
-          const rect = element.getBoundingClientRect();
+          const rect = clippedContentRect(element, root);
           if (protectedRects.some((protectedRect) => rect.left < protectedRect.right && rect.right > protectedRect.left
             && rect.top < protectedRect.bottom && rect.bottom > protectedRect.top)) {
             throw new Error("motion_contract_protected_overlap");
@@ -269,7 +269,7 @@
         for (const group of visibleGroups) {
           const start = Number(group.dataset.groupStart);
           const duration = Number(group.dataset.groupDuration);
-          if (currentTime !== null && (currentTime < start - 1 / 30 || currentTime > start + duration + 1 / 30)) {
+          if (currentTime !== null && (currentTime < start - 1 / Number(root.dataset.fps) || currentTime > start + duration + 1 / Number(root.dataset.fps))) {
             throw new Error("motion_contract_group_lifetime");
           }
         }
@@ -294,23 +294,47 @@
         }
       };
       window.__motionContract();
+      // Register the seekable timeline only after font and image geometry settles.
+      Promise.all([
+        document.fonts.ready,
+        ...[...document.images].map(image => image.decode().catch(() => {}))
+      ]).then(() => {
+      const timelineWindowStart = Number("__CUT_MOTION_MEDIA_START__");
+      const timelineWindowDuration = Number("__CUT_MOTION_DURATION__");
       const timeline = gsap.timeline({ paused: true, defaults: { ease: "power3.out" } });
       /* CUT_MOTION_MG_TIMELINES */
+      const rawTimelineTotalTime = timeline.totalTime.bind(timeline);
+      const rawTimelineTime = timeline.time.bind(timeline);
+      const rawTimelineTotalDuration = timeline.totalDuration.bind(timeline);
+      const toGlobalTimelineTime = value => Math.min(rawTimelineTotalDuration(),
+        Math.max(timelineWindowStart, Math.min(timelineWindowStart + timelineWindowDuration, Number(value) + timelineWindowStart)));
+      const toLocalTimelineTime = value => Math.min(timelineWindowDuration, Math.max(0, Number(value) - timelineWindowStart));
       let motionContractUpdateSerial = 0;
       timeline.eventCallback("onUpdate", () => {
         motionContractUpdateSerial += 1;
         window.__motionContract(timeline.time());
       });
-      const seekTimeline = timeline.totalTime.bind(timeline);
+      const seekTimeline = rawTimelineTotalTime;
       timeline.totalTime = function checkedTotalTime(value, suppressEvents) {
-        if (arguments.length === 0) return seekTimeline();
+        if (arguments.length === 0) return toLocalTimelineTime(seekTimeline());
         const serialBeforeSeek = motionContractUpdateSerial;
-        const result = seekTimeline(value, suppressEvents);
+        const result = seekTimeline(toGlobalTimelineTime(value), suppressEvents);
         if (motionContractUpdateSerial === serialBeforeSeek) window.__motionContract(Number(value));
         return result;
       };
+      timeline.seek = function localSeek(value, suppressEvents) {
+        if (arguments.length === 0) return toLocalTimelineTime(rawTimelineTime());
+        return timeline.totalTime(value, suppressEvents);
+      };
+      timeline.time = function localTime(value, suppressEvents) {
+        if (arguments.length === 0) return toLocalTimelineTime(rawTimelineTime());
+        return timeline.totalTime(value, suppressEvents);
+      };
+      timeline.duration = function chunkDuration() { return timelineWindowDuration; };
+      timeline.totalDuration = function chunkTotalDuration() { return timelineWindowDuration; };
       window.__timelines = window.__timelines || {};
       window.__timelines.main = timeline;
+      });
     </script>
   </body>
 </html>

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  assertCaptionSequence,
   captionFrameWindow,
   durationToFrames,
   frameWindowsOverlap,
@@ -28,7 +29,12 @@ export const resolveRenderMode = (requestedMode = "auto", duration) => {
   return duration <= MONOLITHIC_MAX_SECONDS ? "monolithic" : "chunked";
 };
 const buildScriptPath = fileURLToPath(new URL("./build-composition.mjs", import.meta.url));
+const renderChunksPath = fileURLToPath(new URL("./render-chunks.mjs", import.meta.url));
+const renderManifestPath = fileURLToPath(new URL("./render-manifest.mjs", import.meta.url));
+const renderDeliveryPath = fileURLToPath(new URL("./render-delivery.mjs", import.meta.url));
+const workflowUtilsPath = fileURLToPath(new URL("./workflow-utils.mjs", import.meta.url));
 const motionWindowUtilsPath = fileURLToPath(new URL("./motion-window-utils.mjs", import.meta.url));
+const mgSpeechTimingPath = fileURLToPath(new URL("./mg-speech-timing.mjs", import.meta.url));
 const frameWindowUtilsPath = fileURLToPath(new URL("./frame-window-utils.mjs", import.meta.url));
 const visualOrchestrationVersionPath = fileURLToPath(new URL("./visual-orchestration-version.mjs", import.meta.url));
 const beatMapSchemaPath = fileURLToPath(new URL("../schemas/beat-map.schema.json", import.meta.url));
@@ -50,6 +56,7 @@ const escapeHtml = (value) => String(value)
   .replaceAll("'", "&#39;");
 
 const installedCaptionSections = (source, cues, fps, totalFrames) => {
+  assertCaptionSequence(cues, totalFrames);
   const block = source.match(captionBlockPattern)?.[0];
   if (!block) throw new Error("Composition template requires an installed-caption block");
   const sectionPattern = /<section\b(?=[^>]*\bmotion-caption-layer\b)(?=[^>]*\bdata-caption-id=["']([^"']+)["'])[^>]*>[\s\S]*?<\/section>/gi;
@@ -195,7 +202,13 @@ export const deriveRenderInputs = (jobRootInput) => {
   const sharedPaths = [...new Set([
     ...sharedSourcePaths,
     buildScriptPath,
+    renderChunksPath,
+    renderManifestPath,
+    renderDeliveryPath,
+    workflowUtilsPath,
     motionWindowUtilsPath,
+    mgSpeechTimingPath,
+    ...(beatMap.beats.some(beat => beat.templateData?.revealCues) ? [path.join(jobRoot, "state/mg-speech-timing.json")] : []),
     frameWindowUtilsPath,
     visualOrchestrationVersionPath,
     beatMapSchemaPath,
@@ -375,6 +388,22 @@ export const deriveRenderManifest = (jobRootInput, options = {}) => {
   const packageJson = readJson(path.join(jobRoot, "hyperframes", "package.json"));
   const inputs = deriveRenderInputs(jobRoot);
   const renderMode = resolveRenderMode(options.mode ?? "chunked", inputs.duration);
+  const candidateBaseline = options.baselineManifest;
+  const baselineManifest = renderMode === "chunked"
+    && candidateBaseline?.schemaVersion === "2.0.0"
+    && Number(candidateBaseline.fps) === inputs.fps
+    && Number(candidateBaseline.totalFrames) === inputs.totalFrames
+    && Number(candidateBaseline.width) === Number(designSystem.canvas.width)
+    && Number(candidateBaseline.height) === Number(designSystem.canvas.height)
+    && Array.isArray(candidateBaseline.chunks)
+    && candidateBaseline.chunks.length > 0
+    && candidateBaseline.chunks.every((chunk) => Number.isInteger(chunk?.startFrame)
+      && Number.isInteger(chunk?.endFrame)
+      && chunk.startFrame >= 0
+      && chunk.endFrame > chunk.startFrame
+      && chunk.endFrame <= inputs.totalFrames)
+    ? candidateBaseline
+    : null;
   const authoritativeMediaPath = path.join(jobRoot, workflow.authoritativeMediaPath ?? "");
   if (!workflow.authoritativeMediaPath
     || !isPathInside(jobRoot, authoritativeMediaPath)
@@ -385,6 +414,7 @@ export const deriveRenderManifest = (jobRootInput, options = {}) => {
   const designLanguageFingerprint = options.designLanguageFingerprint
     ?? computeDesignLanguageFingerprint(jobRoot, workflow.captionMode);
   const runtime = resolveLockedHyperframesCli(jobRoot);
+  if (!runtime.environment) throw new Error("Renderer environment identity is unavailable");
   const shared = {
     authoritativeMediaSha256: workflow.authoritativeMediaSha256,
     designLanguageFingerprint,
@@ -394,14 +424,14 @@ export const deriveRenderManifest = (jobRootInput, options = {}) => {
     hyperframes: packageJson.devDependencies?.hyperframes,
     gsap: packageJson.devDependencies?.gsap,
     rendererFingerprint: runtime.fingerprint,
-    cacheContract: 3
+    cacheContract: 5
   };
   const chunks = renderMode === "chunked" ? (() => {
     const boundaries = planStableChunkBoundaries({
       totalFrames: inputs.totalFrames,
       fps: inputs.fps,
       unsafeIntervals: unsafeRenderIntervals(inputs.beatMap, inputs),
-      baselineBoundaries: baselineBoundariesFrom(options.baselineManifest)
+      baselineBoundaries: baselineBoundariesFrom(baselineManifest)
     });
     return boundaries.slice(0, -1).map((startFrame, index) => {
       const endFrame = boundaries[index + 1];
@@ -426,6 +456,7 @@ export const deriveRenderManifest = (jobRootInput, options = {}) => {
     totalFrames: inputs.totalFrames,
     duration: inputs.totalFrames / inputs.fps,
     audio: { sourcePath: workflow.authoritativeMediaPath, sourceSha256: workflow.authoritativeMediaSha256 },
+    renderer: { fingerprint: runtime.fingerprint, environment: runtime.environment },
     designLanguageFingerprint,
     sharedDependencySha256: inputs.sharedDependencySha256,
     beats: inputs.beats,

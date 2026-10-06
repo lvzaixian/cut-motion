@@ -44,3 +44,9 @@ Never cut raw text at a character limit before the language pass.
 5. Present every cue in `docs/caption-plan.md` when creative review is triggered.
 6. After required user approval or recorded conditional internal approval, the state machine marks the plan approved.
 7. Promote that exact plan with `scripts/promote-caption-review-plan.mjs`, validate it, and install it. Do not repaginate during composition.
+
+## Unified input and frame timing
+
+New jobs can author the same decisions once in `planning-inputs.json`: sparse `captionEdits`, confirmed terminology in `corrections`, and explicit ranges only for intentional boundaries. Generation derives the review plan and documents without replacing the language pass. Existing measured caption cards can provide timing without a new CaptionProgram or transcription.
+
+Released cues use half-open integer windows `[startFrame, endFrame)`. Adjacent cues may touch, including fade tails, but cannot overlap. Preserve the job's frame rate and fractional-second snapping fix. Phrase spans are insufficient evidence for internal MG keyword onsets; resolve them before visual-package approval.

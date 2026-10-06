@@ -9,6 +9,8 @@ mode="${1:---static}"
   exit 64
 }
 
+node "$repository_root/scripts/check-repository-privacy.mjs"
+
 while IFS= read -r json_file; do
   jq -e . "$json_file" >/dev/null
 done < <(
@@ -19,11 +21,11 @@ done < <(
 
 while IFS= read -r shell_file; do
   bash -n "$shell_file"
-done < <(find "$repository_root/scripts" -name '*.sh' -type f)
+done < <(find "$repository_root/scripts" "$repository_root/tests" -name '*.sh' -type f)
 
 while IFS= read -r module_file; do
   node --check "$module_file"
-done < <(find "$repository_root/scripts" -name '*.mjs' -type f)
+done < <(find "$repository_root/scripts" "$repository_root/tests" -name '*.mjs' -type f)
 
 bash "$repository_root/scripts/check-environment.sh" check
 
@@ -66,13 +68,17 @@ done
   exit 1
 }
 
+# Local editorial fixtures remain alongside upstream regression coverage.
 node "$repository_root/scripts/test-composition-builder.mjs"
-node "$repository_root/scripts/test-render-core.mjs"
-node "$repository_root/scripts/test-validation-receipts.mjs"
 node "$repository_root/scripts/test-planning-contracts.mjs"
-node "$repository_root/scripts/test-workflow-contracts.mjs"
 node "$repository_root/scripts/test-approve-creative.mjs"
-bash "$repository_root/scripts/test-media-pipeline.sh" --static
+for test_file in "$repository_root"/tests/test-*.mjs; do
+  case "$(basename "$test_file")" in
+    test-delivery-workflow.mjs|test-prepare-rough-cut.mjs|test-source-audio-index.mjs|test-media-promotion.mjs) continue ;;
+  esac
+  node "$test_file"
+done
+bash "$repository_root/tests/test-media-pipeline.sh" --static
 
 if [[ "$mode" == "--runtime" ]]; then
   runtime_font="${CUT_MOTION_FONT:-${MOTIONSCRIPT_FONT:-}}"
@@ -80,8 +86,11 @@ if [[ "$mode" == "--runtime" ]]; then
     echo "Runtime verification requires CUT_MOTION_FONT=/absolute/path/to/smiley-sans-oblique.woff2" >&2
     exit 66
   }
-  bash "$repository_root/scripts/test-media-pipeline.sh" --runtime
-  node "$repository_root/scripts/test-delivery-workflow.mjs" "$runtime_font"
+  bash "$repository_root/tests/test-media-pipeline.sh" --runtime
+  node "$repository_root/tests/test-prepare-rough-cut.mjs"
+  node "$repository_root/tests/test-source-audio-index.mjs"
+  node "$repository_root/tests/test-media-promotion.mjs"
+  node "$repository_root/tests/test-delivery-workflow.mjs" "$runtime_font"
 fi
 
 echo "cut-motion repository verification passed ($mode)."

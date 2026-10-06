@@ -231,6 +231,10 @@ for (const declaration of ["overflow-wrap: normal", "word-break: normal", "text-
   if (!composition.includes(declaration)) errors.push(`composition is missing no-orphan declaration: ${declaration}`);
 }
 
+for (const match of composition.matchAll(/([^<>]+)<br\s*\/?\s*>/gi)) {
+  const trailingRun = match[1].trim().match(/([\p{Script=Han}]+)[\s\p{P}\p{S}\p{L}\p{N}]*$/u)?.[1] ?? "";
+  if (trailingRun.length === 1) errors.push(`explicit line ends with a one-character orphan: ${trailingRun}`);
+}
 const explicitLines = composition.split(/<br\s*\/?\s*>/i).slice(1);
 for (const [index, line] of explicitLines.entries()) {
   const text = line.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();

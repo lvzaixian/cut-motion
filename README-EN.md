@@ -4,6 +4,8 @@
 
 cut-motion is an open Agent workflow that turns a talking-head recording into a tightly edited, captioned, motion-designed video.
 
+This maintained branch integrates upstream `41baefb` while retaining the local four-decision workflow, cover and five-platform title delivery, recording-backed wording and controlled motion. See [the integration guide](docs/upstream-integration.md) for unified planning, semantic templates, measured keyword timing, waveform proposals and render reuse.
+
 ## How to use it
 
 You do not need to learn video-editing software, code, or terminal commands. Open this repository in Codex, Claude Code, or a similar coding Agent and describe what you want in natural language.

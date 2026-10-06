@@ -1,0 +1,121 @@
+{
+  "schemaVersion": "1.0.0",
+  "lexicon": {
+    "protectedTerms": [
+      "新工具"
+    ],
+    "forbiddenStandaloneCues": []
+  },
+  "beats": [
+    {
+      "id": "b01-claim",
+      "sceneId": "hook",
+      "sourceSegmentIds": [
+        "main-001"
+      ],
+      "text": "今天我要演示",
+      "start": 0.5,
+      "end": 2.4,
+      "intent": "引出工具演示",
+      "noMgReason": "开头用口播明确主题，额外图形没有独立信息增益。"
+    },
+    {
+      "id": "b02-tool",
+      "sceneId": "proof",
+      "sourceSegmentIds": [
+        "main-002"
+      ],
+      "text": "这个新工具很好用",
+      "start": 3,
+      "end": 5.4,
+      "templateId": "annotation",
+      "intent": "补充演示位置",
+      "templateData": {
+        "copy": [
+          "演示见片尾"
+        ]
+      },
+      "entryAnchorWordId": "main-002:word-001",
+      "exitAnchorWordId": "main-002:word-001",
+      "exitAnchorOffsetFrames": 0,
+      "exitFrames": 6,
+      "entranceFrames": 6,
+      "supportRole": "action",
+      "attentionCost": "low",
+      "components": [
+        "批注"
+      ],
+      "typography": {
+        "fontSizePx": 96
+      },
+      "factualClaims": [],
+      "terms": [],
+      "layout": {
+        "primaryOccupancyRatio": 0.3,
+        "primaryBoundsNormalized": {
+          "x": 0.2,
+          "y": 0.4,
+          "width": 0.6,
+          "height": 0.3
+        },
+        "panelPaddingPx": 56,
+        "faceCover": "none",
+        "safeAreaPass": true,
+        "focalPlacement": "center",
+        "focalPlacementRationale": "提示位于主体附近且高于独立字幕区。"
+      },
+      "motionProfile": "thoughtful-editorial-v1",
+      "surfaceTreatment": "direct-overlay",
+      "captionSafeZonePass": true,
+      "viewerQuestion": "在哪里继续看工具演示",
+      "removalLoss": "缺少可回看的演示位置提示",
+      "visualEncoding": "单一文字批注",
+      "stillFrameValue": "暂停时保留演示位置提示",
+      "attentionCostReason": "一条短批注不争夺字幕注意",
+      "visualDecision": {
+        "mode": "annotation",
+        "memoryAnchor": "演示见片尾",
+        "supportingWordIds": [
+          "main-002:word-001"
+        ],
+        "fallback": "保留纯字幕"
+      },
+      "objectCues": [
+        {
+          "id": "note",
+          "semanticRole": "演示位置提示",
+          "spokenTriggerWordId": "main-002:word-001",
+          "preMotionFrame": 90,
+          "firstLegibleFrame": 90,
+          "settledFrame": 94,
+          "exitTriggerWordId": "main-002:word-001",
+          "invisibleFrame": 162,
+          "holdKind": "standard"
+        }
+      ]
+    }
+  ],
+  "annotationDecisions": [],
+  "captionEdits": {
+    "main-001": [
+      "今天我要",
+      "演示"
+    ],
+    "main-002": [
+      "这个新工具",
+      "很好用"
+    ]
+  },
+  "visualOrchestrationVersion": 2,
+  "materials": [],
+  "cueExceptions": {
+    "caption-0002": {
+      "kind": "meaningful-short-closing",
+      "reason": "完整句末谓语，保留语义结尾。"
+    },
+    "caption-0004": {
+      "kind": "meaningful-short-closing",
+      "reason": "完整口语判断，承接前一条名词短语。"
+    }
+  }
+}

@@ -6,7 +6,7 @@ import { isPathInside, readJson, sha256File, writeJsonAtomic } from "./workflow-
 const [jobArgument, kind, sourceArgument, ...rawOptions] = process.argv.slice(2);
 const targets = {
   roughcut: "roughcut/a-roll.mp4",
- final: "output/final.mp4"
+  final: "output/final.mp4"
 };
 if (!jobArgument || !targets[kind] || !sourceArgument) {
   console.error("Usage: node promote-job-media.mjs <job> <roughcut|final> <source-media> [--consume-source]");
@@ -34,16 +34,7 @@ if (consumeSource) {
     throw new Error("Cannot consume immutable input media");
   }
 }
-if (fs.existsSync(workflowPath)) {
-  const workflow = readJson(workflowPath);
-  const gate = workflow.gates?.["rough-cut-review"];
-  if (kind === "roughcut" && gate?.status === "approved" && gate.artifact === targets[kind]) {
-    throw new Error("Cannot replace approved roughcut media before reopening its producing stage");
-  }
-  if (kind === "final" && workflow.lastKnownGoodDelivery?.path === targets.final) {
-    throw new Error("Render a delivery revision to output/final.candidate.mp4 and let the workflow promote it after validation");
-  }
-}
+const workflow = fs.existsSync(workflowPath) ? readJson(workflowPath) : null;
 
 const probeMedia = (mediaPath) => {
   const result = spawnSync("ffprobe", [
@@ -64,14 +55,21 @@ const probeMedia = (mediaPath) => {
 
 const sourceProbe = probeMedia(sourcePath);
 const sourceSha256 = sha256File(sourcePath);
-fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-if (sourcePath === targetPath) {
-  project.mediaArtifacts ??= {};
-  project.mediaArtifacts[kind] = { path: targets[kind], sha256: sourceSha256, ...sourceProbe, updatedAt: new Date().toISOString() };
-  writeJsonAtomic(projectPath, project);
-  console.log(`Media already canonical: ${targets[kind]}`);
-  process.exit(0);
+if (kind === "roughcut" && workflow?.authoritativeMediaPath === targets[kind]
+  && workflow.authoritativeMediaSha256 && sourceSha256 !== workflow.authoritativeMediaSha256) {
+  throw new Error("Cannot replace locked roughcut media before reopening rough-cut");
 }
+const roughCutGate = workflow?.gates?.["rough-cut-review"];
+if (kind === "roughcut" && roughCutGate?.status === "approved" && roughCutGate.artifact === targets[kind]
+  && fs.existsSync(targetPath) && sourceSha256 !== sha256File(targetPath)) {
+  throw new Error("Cannot replace approved roughcut media before reopening its producing stage");
+}
+if (kind === "final" && sourcePath !== targetPath && fs.existsSync(targetPath)
+  && sha256File(targetPath) !== sourceSha256) {
+  throw new Error("Preserve the last delivery: render a final.candidate.mp4 and promote it through the workflow after media and title validation");
+}
+fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+const sourceIsCanonical = sourcePath === targetPath;
 
 const pendingPath = path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.${process.pid}.pending`);
 const previousPath = path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.${process.pid}.previous`);
@@ -107,17 +105,19 @@ const restore = () => {
 };
 
 try {
-  if (consumeSource && sourceStat.dev === fs.statSync(path.dirname(targetPath)).dev) {
-    fs.renameSync(sourcePath, pendingPath);
-    sourceMoved = true;
-  } else {
-    fs.copyFileSync(sourcePath, pendingPath, fs.constants.COPYFILE_EXCL);
+  if (!sourceIsCanonical) {
+    if (consumeSource && sourceStat.dev === fs.statSync(path.dirname(targetPath)).dev) {
+      fs.renameSync(sourcePath, pendingPath);
+      sourceMoved = true;
+    } else {
+      fs.copyFileSync(sourcePath, pendingPath, fs.constants.COPYFILE_EXCL);
+    }
+    if (sha256File(pendingPath) !== sourceSha256) throw new Error("Temporary media hash differs from source");
+    probeMedia(pendingPath);
+    backupFile(targetPath, previousPath);
+    fs.renameSync(pendingPath, targetPath);
+    targetReplaced = true;
   }
-  if (sha256File(pendingPath) !== sourceSha256) throw new Error("Temporary media hash differs from source");
-  probeMedia(pendingPath);
-  backupFile(targetPath, previousPath);
-  fs.renameSync(pendingPath, targetPath);
-  targetReplaced = true;
 
   if (hyperframesAsset) {
     assertOwnedDirectory(path.join(jobRoot, "hyperframes"));
@@ -141,7 +141,9 @@ try {
   for (const obsoletePath of [
     previousPath,
     previousAsset,
-    consumeSource && !sourceMoved ? sourcePath : null
+    // POSIX rename can be a no-op when the asset already links to the target.
+    pendingAsset,
+    consumeSource && !sourceMoved && !sourceIsCanonical ? sourcePath : null
   ].filter(Boolean)) {
     try {
       if (fs.existsSync(obsoletePath)) fs.rmSync(obsoletePath);
@@ -154,4 +156,4 @@ try {
   throw error;
 }
 
-console.log(`Promoted ${kind}: ${targets[kind]}${consumeSource ? " and consumed source" : ""}`);
+console.log(`${sourceIsCanonical ? "Media already canonical" : `Promoted ${kind}`}: ${targets[kind]}${consumeSource && !sourceIsCanonical ? " and consumed source" : ""}`);

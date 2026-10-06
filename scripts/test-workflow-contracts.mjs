@@ -1263,6 +1263,16 @@ try {
   assert.equal(manualWorkflow.currentState, "rough-cut-review");
   assert.equal(readJson(manualProjectPath).mediaArtifacts.roughcut, undefined);
   assert.equal(fs.existsSync(path.join(manualReview.job, "roughcut", "a-roll.mp4")), false);
+  const policyBoundState = fs.readFileSync(manualReview.workflowPath);
+  for (const origin of [roughCutSelectionPolicy, null]) {
+    const disabledSelection = readJson(manualReview.workflowPath);
+    disabledSelection.roughCutSelectionPolicy = null;
+    disabledSelection.roughCutSelectionPolicyOrigin = origin;
+    writeJsonAtomic(manualReview.workflowPath, disabledSelection);
+    script("workflow-state.mjs", [manualReview.workflowPath, "approve", "--actor", "user", "--note", "Do not bypass the last-complete-take policy"], false, /selection cannot be disabled by a null policy/);
+    assert.equal(readJson(manualReview.workflowPath).currentState, "rough-cut-review");
+  }
+  fs.writeFileSync(manualReview.workflowPath, policyBoundState);
   const staleManualSelectionPath = path.join(manualReview.job, "state", "roughcut-selection.json");
   const staleManualSelection = readJson(staleManualSelectionPath);
   staleManualSelection.chatcut.activeTimelineId = "timeline-stale";
@@ -1432,6 +1442,47 @@ try {
   defaultRouteState = readJson(defaultRouteWorkflowPath);
   assert.equal(defaultRouteState.currentState, "complete");
   assert.equal(defaultRouteState.lastKnownGoodDelivery.sha256, finalDeliveryHash);
+
+  script("workflow-state.mjs", [defaultRouteWorkflowPath, "reopen", "delivery", "--actor", "user", "--note", "Candidate delivery transaction regression"]);
+  const candidatePath = path.join(defaultRouteJob, "output", "final.candidate.mp4");
+  fs.copyFileSync(defaultRenderPath, candidatePath);
+  fs.appendFileSync(candidatePath, "candidate revision");
+  const candidateReceiptPath = `${candidatePath}.render.json`;
+  const finalReceiptPath = `${defaultRenderPath}.render.json`;
+  writeJsonAtomic(candidateReceiptPath, { fixture: "candidate render receipt" });
+  writeJsonAtomic(finalReceiptPath, { fixture: "previous render receipt" });
+  prepareTitles(defaultRouteJob, "output/final.candidate.mp4");
+  const titlesPath = path.join(defaultRouteJob, "state", "titles.json");
+  const retainedPaths = [defaultRenderPath, finalReceiptPath, titlesPath, defaultRouteWorkflowPath, candidatePath, candidateReceiptPath];
+  const retainedBytes = new Map(retainedPaths.map(file => [file, fs.readFileSync(file)]));
+  const failureInjection = path.join(temporaryRoot, "inject-promotion-failure.mjs");
+  for (const failureTarget of [finalReceiptPath, titlesPath, defaultRouteWorkflowPath]) {
+    fs.writeFileSync(failureInjection, `import fs from "node:fs";
+const rename = fs.renameSync;
+let injected = false;
+fs.renameSync = (source, destination) => {
+  if (!injected && destination === ${JSON.stringify(failureTarget)}) {
+    injected = true;
+    throw new Error("Injected delivery promotion failure");
+  }
+  return rename(source, destination);
+};
+`);
+    run(process.execPath, ["--import", failureInjection, path.join(repositoryRoot, "scripts", "workflow-state.mjs"), defaultRouteWorkflowPath, "advance", "--artifact", "output/final.candidate.mp4"], false, /Injected delivery promotion failure/);
+    for (const retainedPath of retainedPaths) {
+      assert.deepEqual(fs.readFileSync(retainedPath), retainedBytes.get(retainedPath), `${path.basename(failureTarget)} failure must restore ${path.basename(retainedPath)}`);
+    }
+    assert.equal(fs.readdirSync(path.join(defaultRouteJob, "output")).some(name => name.startsWith(".delivery-promotion-")), false);
+  }
+  script("workflow-state.mjs", [defaultRouteWorkflowPath, "advance", "--artifact", "output/final.candidate.mp4"]);
+  assert.equal(fs.existsSync(candidatePath), false);
+  assert.equal(fs.existsSync(candidateReceiptPath), false);
+  assert.deepEqual(fs.readFileSync(defaultRenderPath), retainedBytes.get(candidatePath));
+  assert.deepEqual(fs.readFileSync(finalReceiptPath), retainedBytes.get(candidateReceiptPath));
+  assert.equal(readJson(titlesPath).sourceDelivery.path, "output/final.mp4");
+  const promotedWorkflow = readJson(defaultRouteWorkflowPath);
+  assert.equal(promotedWorkflow.currentState, "complete");
+  assert.equal(promotedWorkflow.lastKnownGoodDelivery.sha256, sha256File(defaultRenderPath));
 
   const cadenceReviewJob = scaffold("cadence-review-gate", "review", "subtitles");
   const cadenceReviewWorkflowPath = path.join(cadenceReviewJob, "state", "workflow.json");

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { buildComposition, findContentCollision, rebuildVisualSample } from "./build-composition.mjs";
+import { buildComposition, clippedContentRect, findContentCollision, rebuildVisualSample } from "./build-composition.mjs";
 import { quantizeFrameWindow } from "./frame-window-utils.mjs";
 import { sha256File } from "./workflow-utils.mjs";
 
@@ -372,9 +372,9 @@ try {
       const duration = operation.kind === "to" ? Number(operation.properties.duration ?? 0) : 0;
       return operation.position + duration <= time ? operation.properties.autoAlpha : alpha;
     }, initialAutoAlpha);
-  assert.equal(clippedAutoAlphaAt(clippedWrapper, 0, 0), 1, "b20: a nonzero visual sample must preserve an already-active wrapper at its first frame");
-  assert.equal(clippedAutoAlphaAt(clippedNodes.get("primary-copy"), 0), 1, "b20: a nonzero visual sample must preserve an already-legible cue at its first frame");
-  assert.equal(clippedAutoAlphaAt(clippedNodes.get("later-copy"), 0), 0, "b20: a future cue remains hidden when another cue is already visible in a clipped sample");
+  assert.equal(clippedAutoAlphaAt(clippedWrapper, 31 / 30, 0), 1, "b20: a nonzero visual sample must preserve an already-active wrapper at its first frame");
+  assert.equal(clippedAutoAlphaAt(clippedNodes.get("primary-copy"), 31 / 30), 1, "b20: a nonzero visual sample must preserve an already-legible cue at its first frame");
+  assert.equal(clippedAutoAlphaAt(clippedNodes.get("later-copy"), 31 / 30), 0, "b20: a future cue remains hidden when another cue is already visible in a clipped sample");
   const tailProfileBuild = buildComposition(profileFixture.hyperframes, {
     startFrame: 43,
     endFrame: 45,
@@ -404,14 +404,14 @@ try {
       const duration = operation.kind === "to" ? Number(operation.properties.duration ?? 0) : 0;
       return operation.position + duration <= time ? operation.properties.autoAlpha : alpha;
     }, initialAutoAlpha);
-  assert.equal(tailAutoAlphaAt(tailWrapper, 0, 0), 1, "b20: the generated wrapper remains visible at the tail of its final cue");
+  assert.equal(tailAutoAlphaAt(tailWrapper, 43 / 30, 0), 1, "b20: the generated wrapper remains visible at the tail of its final cue");
   assert.equal(
-    tailAutoAlphaAt(tailNodes.get("later-copy"), 1 / 30),
+    tailAutoAlphaAt(tailNodes.get("later-copy"), 44 / 30),
     1,
     "b20: a cue ending at a half-open output boundary must remain opaque on its final encoded frame"
   );
   assert.equal(
-    tailAutoAlphaAt(tailNodes.get("later-copy"), 0.066667),
+    tailAutoAlphaAt(tailNodes.get("later-copy"), 45 / 30),
     0,
     "b20: a terminal cue must hide at the exclusive output boundary"
   );
@@ -452,6 +452,11 @@ try {
   ], { encoding: "utf8" });
   const directOverlayLayout = checkLayout();
   assert.equal(directOverlayLayout.status, 0, `${directOverlayLayout.stdout}\n${directOverlayLayout.stderr}`);
+  fs.writeFileSync(profileBuild.outputPath, profileHtml.replace(">内容</span>", ">甲<br>内容</span>"));
+  const orphanBeforeBreak = checkLayout();
+  assert.notEqual(orphanBeforeBreak.status, 0, "an explicit first line cannot leave a single Han character before its break");
+  assert.match(orphanBeforeBreak.stderr, /one-character orphan/);
+  fs.writeFileSync(profileBuild.outputPath, profileHtml);
   fs.writeFileSync(profileStylePath, ".surface { background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(12px); }");
   assert.throws(() => buildComposition(profileFixture.hyperframes), /background|filters/i, "b09: direct overlays cannot hide a dark or blurred backboard in their stylesheet");
   fs.writeFileSync(profileStylePath, ".surface { background/**/: rgba(0, 0, 0, 0.7); }");
@@ -778,7 +783,7 @@ try {
       getPropertyValue: () => ""
     });
     const window = {};
-    new Function("window", "document", "getComputedStyle", "findContentCollision", motionContractAssignment)(window, document, style, () => null);
+    new Function("window", "document", "getComputedStyle", "findContentCollision", "clippedContentRect", motionContractAssignment)(window, document, style, () => null, clippedContentRect);
     return window.__motionContract();
   };
   const profileSurface = (dataset, backgroundColor = "transparent", options = {}) => {

@@ -14,6 +14,15 @@ import {
   writeJsonAtomic
 } from "./workflow-utils.mjs";
 
+const hyperframesWorkerArguments = () => {
+  const workers = process.env.CUT_MOTION_RENDER_WORKERS;
+  if (!workers) return [];
+  if (!/^[1-8]$/.test(workers)) {
+    throw new Error("CUT_MOTION_RENDER_WORKERS must be a whole number from 1 to 8");
+  }
+  return ["--workers", workers];
+};
+
 const run = (command, argumentsList, options = {}) => {
   const result = spawnSync(command, argumentsList, { encoding: "utf8", ...options });
   if (result.status !== 0) {
@@ -80,7 +89,7 @@ const cachePaths = (jobRoot, quality, cacheKey) => {
   };
 };
 
-export const validateCacheReceipt = (jobRootInput, quality, chunk) => {
+export const validateCacheReceipt = (jobRootInput, quality, chunk, renderer = null) => {
   const jobRoot = path.resolve(jobRootInput);
   const paths = cachePaths(jobRoot, quality, chunk.cacheKey);
   if (!fs.existsSync(paths.artifactPath) || !fs.existsSync(paths.receiptPath)) return null;
@@ -91,10 +100,13 @@ export const validateCacheReceipt = (jobRootInput, quality, chunk) => {
       || fs.lstatSync(paths.receiptPath).isSymbolicLink()) return null;
     const receipt = readJson(paths.receiptPath);
     const expectedFrames = chunk.endFrame - chunk.startFrame;
-    if (receipt.cacheKey !== chunk.cacheKey
+    if (receipt.schemaVersion !== "2.0.0"
+      || receipt.cacheKey !== chunk.cacheKey
       || receipt.quality !== quality
       || receipt.frameCount !== expectedFrames
       || receipt.chunkDependencySha256 !== chunk.dependencySha256) return null;
+    if (renderer && (receipt.rendererFingerprint !== renderer.fingerprint
+      || JSON.stringify(receipt.rendererEnvironment) !== JSON.stringify(renderer.environment))) return null;
     if (receipt.artifactSha256 !== sha256File(paths.artifactPath)) return null;
     if (!receipt.streamSignature) return null;
     const probe = {
@@ -110,11 +122,13 @@ export const validateCacheReceipt = (jobRootInput, quality, chunk) => {
   }
 };
 
-const writeCacheReceipt = (paths, quality, chunk, probe) => {
+const writeCacheReceipt = (paths, quality, chunk, probe, renderer) => {
   const receipt = {
     schemaVersion: "2.0.0",
     cacheKey: chunk.cacheKey,
     quality,
+    rendererFingerprint: renderer.fingerprint,
+    rendererEnvironment: renderer.environment,
     chunkDependencySha256: chunk.dependencySha256,
     artifactSha256: sha256File(paths.artifactPath),
     frameCount: probe.actualFrames,
@@ -122,6 +136,25 @@ const writeCacheReceipt = (paths, quality, chunk, probe) => {
   };
   writeJsonAtomic(paths.receiptPath, receipt);
   return receipt;
+};
+
+const normalizeChunkFrameBoundary = (temporaryPath, expectedFrames, fps) => {
+  const normalizedPath = `${temporaryPath}.normalized.mp4`;
+  try {
+    run("ffmpeg", [
+      "-y", "-v", "error",
+      "-i", temporaryPath,
+      "-frames:v", String(expectedFrames),
+      "-map", "0:v:0",
+      "-c:v", "copy",
+      "-r", String(fps),
+      "-an",
+      normalizedPath
+    ], { label: "Chunk frame-boundary normalization" });
+    fs.renameSync(normalizedPath, temporaryPath);
+  } finally {
+    if (fs.existsSync(normalizedPath)) fs.unlinkSync(normalizedPath);
+  }
 };
 
 const assertChunkProbe = (manifest, chunk, probe) => {
@@ -144,6 +177,9 @@ const assertFullOutputProbe = (manifest, probe, label) => {
   if (probe.width !== manifest.width || probe.height !== manifest.height) throw new Error(`${label} dimensions differ from Render Manifest`);
   if (!Number.isFinite(fps) || Math.abs(fps - manifest.fps) > 0.001) throw new Error(`${label} FPS differs from Render Manifest`);
   if (probe.audioStreamCount < 1) throw new Error(`${label} has no audio stream`);
+  if (!Number.isFinite(probe.duration) || Math.abs(probe.duration - manifest.duration) > 1 / manifest.fps) {
+    throw new Error(`${label} duration differs from Render Manifest`);
+  }
 };
 
 function assertCurrentManifest(jobRoot, manifest, mode = manifest.chunks?.length ? "chunked" : "monolithic") {
@@ -157,7 +193,7 @@ function assertCurrentManifest(jobRoot, manifest, mode = manifest.chunks?.length
 }
 
 const renderChunk = (jobRoot, manifest, chunk, quality, binary) => {
-  const existing = validateCacheReceipt(jobRoot, quality, chunk);
+  const existing = validateCacheReceipt(jobRoot, quality, chunk, manifest.renderer);
   if (existing) return { ...existing, reused: true };
   const paths = cachePaths(jobRoot, quality, chunk.cacheKey);
   fs.mkdirSync(paths.directory, { recursive: true });
@@ -178,14 +214,16 @@ const renderChunk = (jobRoot, manifest, chunk, quality, binary) => {
       "--composition", relativeComposition,
       "--quality", quality,
       "--output", temporaryPath,
+      ...hyperframesWorkerArguments(),
       "."
     ], { cwd: path.join(jobRoot, "hyperframes"), stdio: "inherit", label: `HyperFrames ${quality} Chunk render` });
+    normalizeChunkFrameBoundary(temporaryPath, chunk.endFrame - chunk.startFrame, manifest.fps);
     const probe = probeVideoArtifact(temporaryPath);
     assertChunkProbe(manifest, chunk, probe);
     assertCurrentManifest(jobRoot, manifest);
     fs.renameSync(temporaryPath, paths.artifactPath);
     promoted = true;
-    const receipt = writeCacheReceipt(paths, quality, chunk, probe);
+    const receipt = writeCacheReceipt(paths, quality, chunk, probe, manifest.renderer);
     return { ...paths, receipt, probe, reused: false };
   } catch (error) {
     if (promoted) {
@@ -220,11 +258,65 @@ const parseTagAttributes = (tag) => {
   return attributes;
 };
 
+const resolveLocalMediaPath = (jobRootInput, sourceValue) => {
+  const jobRoot = path.resolve(jobRootInput);
+  const cleanSource = sourceValue?.split(/[?#]/, 1)[0];
+  if (!cleanSource || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(cleanSource)) return null;
+  let decodedSource;
+  try {
+    decodedSource = decodeURI(cleanSource);
+  } catch {
+    return null;
+  }
+  const sourcePath = path.resolve(path.join(jobRoot, "hyperframes"), decodedSource.startsWith("/") ? `.${decodedSource}` : decodedSource);
+  if (!isPathInside(jobRoot, sourcePath) || !fs.existsSync(sourcePath)) return null;
+  const realPath = fs.realpathSync(sourcePath);
+  if (!isPathInside(fs.realpathSync(jobRoot), realPath) || !fs.statSync(realPath).isFile()) return null;
+  return realPath;
+};
+
+const postMixAudioTag = (jobRoot, tag) => {
+  const attributes = parseTagAttributes(tag);
+  if (attributes["data-render-audio"] !== "post-mix") return null;
+  const sourcePath = resolveLocalMediaPath(jobRoot, attributes.src);
+  const start = Number(attributes["data-start"]);
+  const duration = Number(attributes["data-duration"]);
+  const mediaStart = Number(attributes["data-media-start"] ?? 0);
+  const volume = Number(attributes["data-volume"] ?? 1);
+  const fadeOutStart = attributes["data-fade-out-start"] == null
+    ? null : Number(attributes["data-fade-out-start"]);
+  const fadeOutDuration = attributes["data-fade-out-duration"] == null
+    ? null : Number(attributes["data-fade-out-duration"]);
+  const playbackRate = attributes["data-playback-rate"] ?? attributes.playbackrate;
+  if (!sourcePath || attributes["data-var-src"] != null || !Number.isFinite(start) || start < 0
+    || !Number.isFinite(duration) || duration <= 0
+    || !Number.isFinite(mediaStart) || mediaStart < 0
+    || !Number.isFinite(volume) || volume < 0 || volume > 1
+    || (playbackRate != null && Number(playbackRate) !== 1)
+    || (fadeOutStart != null && (!Number.isFinite(fadeOutStart) || fadeOutStart < start))
+    || (fadeOutDuration != null && (!Number.isFinite(fadeOutDuration) || fadeOutDuration <= 0))
+    || ((fadeOutStart == null) !== (fadeOutDuration == null))
+    || (fadeOutStart != null && fadeOutStart + fadeOutDuration > start + duration + 1e-6)) {
+    throw new Error("Invalid post-mix audio tag");
+  }
+  return { sourcePath, start, duration, mediaStart, volume, fadeOutStart, fadeOutDuration };
+};
+
+export const resolvePostMixAudioTags = (jobRootInput) => {
+  const jobRoot = path.resolve(jobRootInput);
+  const template = fs.readFileSync(path.join(jobRoot, "hyperframes", "index.template.html"), "utf8");
+  return [...template.matchAll(/<audio\b[^>]*>/gi)]
+    .map(([tag]) => postMixAudioTag(jobRoot, tag))
+    .filter(Boolean);
+};
+
 export const singlePassAudioSupported = (jobRoot, manifest) => {
   const template = fs.readFileSync(path.join(jobRoot, "hyperframes", "index.template.html"), "utf8");
   const audioTags = [...template.matchAll(/<audio\b[^>]*>/gi)].map((match) => match[0]);
-  if (audioTags.length !== 1) return false;
-  const attributes = parseTagAttributes(audioTags[0]);
+  const sourceTags = audioTags.filter((tag) => parseTagAttributes(tag).id === "source-audio");
+  const postMixTags = audioTags.filter((tag) => parseTagAttributes(tag)["data-render-audio"] === "post-mix");
+  if (sourceTags.length !== 1 || sourceTags.length + postMixTags.length !== audioTags.length) return false;
+  const attributes = parseTagAttributes(sourceTags[0]);
   const durationIsFull = attributes["data-duration"] === "__CUT_MOTION_DURATION__"
     || Number(attributes["data-duration"]) === manifest.duration;
   const mediaStartIsZero = attributes["data-media-start"] === "__CUT_MOTION_MEDIA_START__"
@@ -239,27 +331,26 @@ export const singlePassAudioSupported = (jobRoot, manifest) => {
     || (attributes["data-playback-rate"] != null && Number(attributes["data-playback-rate"]) !== 1)) {
     return false;
   }
-  const sourceValue = attributes.src?.split(/[?#]/, 1)[0];
-  if (!sourceValue || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(sourceValue)) return false;
-  let decodedSource;
+  const sourcePath = resolveLocalMediaPath(jobRoot, attributes.src);
+  if (!sourcePath || sha256File(sourcePath) !== manifest.audio.sourceSha256) {
+    return false;
+  }
   try {
-    decodedSource = decodeURI(sourceValue);
+    for (const tag of postMixTags) {
+      const item = postMixAudioTag(jobRoot, tag);
+      if (item.start + item.duration > manifest.duration + 1e-6) return false;
+    }
   } catch {
     return false;
   }
-  const sourcePath = path.resolve(path.join(jobRoot, "hyperframes"), decodedSource);
-  if (!isPathInside(jobRoot, sourcePath)
-    || !fs.existsSync(sourcePath)
-    || sha256File(sourcePath) !== manifest.audio.sourceSha256) {
-    return false;
-  }
-  const withoutAudioTag = template.replace(audioTags[0], "");
+  const withoutAudioTag = template.replace(/<audio\b[^>]*>\s*<\/audio>/gi, "");
   return !/(?:source-audio|playbackRate|preservesPitch|querySelector(?:All)?\s*\(\s*["'][^"']*audio|timeline\.(?:to|fromTo)\([^)]*\bvolume\b)/s.test(withoutAudioTag);
 };
 
 const assemblyReceiptPath = (outputPath) => `${outputPath}.render.json`;
 export const promoteRenderedCandidate = (jobRoot, manifest, candidatePath, outputPath, { mode } = {}) => {
   assertCurrentManifest(jobRoot, manifest, mode);
+  assertDeliveryOutputSafe(jobRoot, outputPath);
   fs.renameSync(candidatePath, outputPath);
 };
 
@@ -313,27 +404,63 @@ export const assembleChunks = (jobRoot, manifest, quality, rendered, outputPath)
     if (!isPathInside(jobRoot, audioPath) || !fs.existsSync(audioPath) || sha256File(audioPath) !== manifest.audio.sourceSha256) {
       throw new Error("Authoritative audio binding is stale");
     }
-    const muxArguments = (audioCodec) => [
-      "-y", "-v", "error",
-      "-i", visualPath, "-i", audioPath,
-      "-map", "0:v:0", "-map", "1:a:0",
-      "-c:v", "copy", "-c:a", audioCodec,
-      ...(audioCodec === "aac" ? ["-b:a", "192k"] : []),
-      "-t", String(manifest.duration),
-      "-movflags", "+faststart",
-      candidatePath
-    ];
-    let mux = spawnSync("ffmpeg", muxArguments("copy"), { encoding: "utf8" });
-    if (mux.status !== 0) mux = spawnSync("ffmpeg", muxArguments("aac"), { encoding: "utf8" });
+    const postMix = resolvePostMixAudioTags(jobRoot);
+    const muxArguments = (audioCodec) => {
+      const inputArguments = ["-i", visualPath, "-i", audioPath];
+      postMix.forEach((item) => inputArguments.push("-i", item.sourcePath));
+      if (postMix.length === 0) {
+        return [
+          "-y", "-v", "error",
+          ...inputArguments,
+          "-map", "0:v:0", "-map", "1:a:0",
+          "-c:v", "copy", "-c:a", audioCodec,
+          ...(audioCodec === "aac" ? ["-b:a", "192k"] : []),
+          "-t", String(manifest.duration),
+          "-movflags", "+faststart",
+          candidatePath
+        ];
+      }
+      const filters = ["[1:a]aresample=48000,volume=1[base]"];
+      const mixLabels = [];
+      postMix.forEach((item, index) => {
+        const inputIndex = index + 2;
+        const delayMs = Math.round(item.start * 1000);
+        let filter = `[${inputIndex}:a]atrim=start=${item.mediaStart}:duration=${item.duration},asetpts=PTS-STARTPTS,aresample=48000,volume=${item.volume}`;
+        if (item.fadeOutStart != null && item.fadeOutDuration != null) {
+          filter += `,afade=t=out:st=${item.fadeOutStart - item.start}:d=${item.fadeOutDuration}`;
+        }
+        filter += `,adelay=${delayMs}|${delayMs}[mix${index}]`;
+        filters.push(filter);
+        mixLabels.push(`[mix${index}]`);
+      });
+      filters.push(`[base]${mixLabels.join("")}amix=inputs=${postMix.length + 1}:duration=first:dropout_transition=0:normalize=0[aout]`);
+      return [
+        "-y", "-v", "error",
+        ...inputArguments,
+        "-filter_complex", filters.join(";"),
+        "-map", "0:v:0", "-map", "[aout]",
+        "-c:v", "copy", "-c:a", audioCodec,
+        ...(audioCodec === "aac" ? ["-b:a", "192k"] : []),
+        "-t", String(manifest.duration),
+        "-movflags", "+faststart",
+        candidatePath
+      ];
+    };
+    let mux = postMix.length > 0
+      ? spawnSync("ffmpeg", muxArguments("aac"), { encoding: "utf8" })
+      : spawnSync("ffmpeg", muxArguments("copy"), { encoding: "utf8" });
+    if (postMix.length === 0 && mux.status !== 0) mux = spawnSync("ffmpeg", muxArguments("aac"), { encoding: "utf8" });
     if (mux.status !== 0) throw new Error(`Audio mux failed: ${(mux.stderr || mux.stdout || "").trim()}`);
     const outputProbe = probeVideoArtifact(candidatePath);
-    if (outputProbe.actualFrames !== manifest.totalFrames) throw new Error("Final assembled frame count does not match Render Manifest");
+    assertFullOutputProbe(manifest, outputProbe, "Final assembled output");
     assertPinnedArtifacts(pinned);
     promoteRenderedCandidate(jobRoot, manifest, candidatePath, outputPath);
     const receipt = {
       schemaVersion: "2.0.0",
       quality,
       mode: "chunked",
+      rendererFingerprint: manifest.renderer.fingerprint,
+      rendererEnvironment: manifest.renderer.environment,
       artifactSha256: sha256File(outputPath),
       contentManifestSha256: manifest.contentManifestSha256,
       totalFrames: manifest.totalFrames,
@@ -371,7 +498,9 @@ export const verifyAssemblyReceipt = (
     "artifactSha256",
     "contentManifestSha256",
     "totalFrames",
-    "streamSignature"
+    "streamSignature",
+    "rendererFingerprint",
+    "rendererEnvironment"
   ]);
   if (receipt.schemaVersion !== "2.0.0"
     || Object.keys(receipt).some((key) => !allowedKeys.has(key))
@@ -382,6 +511,10 @@ export const verifyAssemblyReceipt = (
   if (quality && receipt.quality !== quality) throw new Error(`Expected ${quality} render receipt`);
   if (receipt.contentManifestSha256 !== expectedContentSha256) {
     throw new Error("Chunk assembly content differs from the current Render Manifest");
+  }
+  if (manifest.renderer && (receipt.rendererFingerprint !== manifest.renderer.fingerprint
+    || JSON.stringify(receipt.rendererEnvironment) !== JSON.stringify(manifest.renderer.environment))) {
+    throw new Error("Render receipt renderer environment is stale");
   }
   if (!["chunked", "monolithic"].includes(receipt.mode)
     || !Number.isInteger(receipt.totalFrames)
@@ -420,6 +553,7 @@ const renderMonolithic = (
       "--composition", "index.html",
       "--quality", quality,
       "--output", temporaryPath,
+      ...hyperframesWorkerArguments(),
       "."
     ], { cwd: path.join(jobRoot, "hyperframes"), stdio: "inherit", label: `HyperFrames ${quality} monolithic render` });
     assertCurrentManifest(jobRoot, manifest, mode);
@@ -431,6 +565,8 @@ const renderMonolithic = (
       quality,
       mode: "monolithic",
       reason,
+      rendererFingerprint: manifest.renderer.fingerprint,
+      rendererEnvironment: manifest.renderer.environment,
       artifactSha256: sha256File(outputPath),
       contentManifestSha256: manifest.contentManifestSha256,
       totalFrames: manifest.totalFrames,
@@ -455,7 +591,26 @@ const validateRenderOutputPath = (jobRoot, quality, outputPath) => {
   }
 };
 
-const prepareRender = (jobRootInput, quality, outputPathInput, requestedMode) => {
+const assertDeliveryOutputSafe = (jobRoot, outputPath) => {
+  const workflow = readJson(path.join(jobRoot, "state", "workflow.json"));
+  const lastGoodPath = workflow.lastKnownGoodDelivery?.path;
+  if (fs.existsSync(outputPath) && (path.resolve(outputPath) === path.join(jobRoot, "output", "final.mp4")
+    || (lastGoodPath && path.resolve(outputPath) === path.resolve(jobRoot, lastGoodPath)))) {
+    throw new Error("An existing final.mp4 must be preserved; render this revision to output/final.candidate.mp4");
+  }
+};
+
+const readPreviousRenderManifest = (jobRoot) => {
+  const manifestPath = path.join(jobRoot, "state", "render-manifest.json");
+  if (!fs.existsSync(manifestPath)) return null;
+  try {
+    return readJson(manifestPath);
+  } catch {
+    return null;
+  }
+};
+
+export const prepareRender = (jobRootInput, quality, outputPathInput, requestedMode) => {
   if (!["standard", "high"].includes(quality)) throw new Error("Render quality must be standard or high");
   const jobRoot = path.resolve(jobRootInput);
   const outputPath = path.resolve(outputPathInput);
@@ -464,7 +619,10 @@ const prepareRender = (jobRootInput, quality, outputPathInput, requestedMode) =>
   const templatePath = path.join(jobRoot, "hyperframes", "index.template.html");
   if (!fs.existsSync(templatePath)) throw new Error("Render requires hyperframes/index.template.html");
 
-  const manifest = deriveRenderManifest(jobRoot, { mode: requestedMode });
+  const manifest = deriveRenderManifest(jobRoot, {
+    mode: requestedMode,
+    baselineManifest: readPreviousRenderManifest(jobRoot)
+  });
   const renderMode = resolveRenderMode(requestedMode, manifest.duration);
   writeRenderManifest(jobRoot, { manifest });
   writeMotionIndex(jobRoot, manifest);
@@ -507,11 +665,24 @@ const renderPreparedChunked = ({ jobRoot, outputPath, binary, manifest, quality 
 
 export const renderChunkedOutput = (jobRootInput, quality, outputPathInput) => {
   const prepared = prepareRender(jobRootInput, quality, outputPathInput, "chunked");
+  assertDeliveryOutputSafe(prepared.jobRoot, prepared.outputPath);
   return renderPreparedChunked(prepared);
 };
 
 export const renderOutput = (jobRootInput, quality, outputPathInput, { mode = "auto" } = {}) => {
   const prepared = prepareRender(jobRootInput, quality, outputPathInput, mode);
+  if (fs.existsSync(assemblyReceiptPath(prepared.outputPath))) {
+    try {
+      const receipt = verifyAssemblyReceipt(prepared.jobRoot, path.relative(prepared.jobRoot, prepared.outputPath), {
+        quality,
+        contentManifestSha256: prepared.manifest.contentManifestSha256
+      });
+      return { mode: receipt.mode, outputPath: prepared.outputPath, manifest: prepared.manifest, receipt, reused: true };
+    } catch {
+      // Stale outputs are rendered as candidates; final.mp4 is guarded below.
+    }
+  }
+  assertDeliveryOutputSafe(prepared.jobRoot, prepared.outputPath);
   if (prepared.renderMode === "monolithic") {
     return renderMonolithic(
       prepared.jobRoot,
@@ -537,7 +708,9 @@ if (isCli) {
     process.exit(64);
   }
   const result = renderOutput(jobRoot, quality, outputPath, { mode });
-  console.log(result.mode === "monolithic"
+  console.log(result.reused
+    ? `Reused verified ${quality} output: ${result.outputPath}`
+    : result.mode === "monolithic"
     ? `Rendered monolithic output: ${result.outputPath}`
     : `Chunk render complete: ${result.renderedChunks} rendered, ${result.reusedChunks} reused`);
 }

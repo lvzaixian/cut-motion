@@ -1,12 +1,31 @@
+import { durationToFrames } from "./frame-window-utils.mjs";
+
 const decimal = (value) => Number(Number(value).toFixed(6));
 export const THOUGHTFUL_EDITORIAL_PROFILE = "thoughtful-editorial-v1";
 
-export const transcriptWordsById = (transcript) => new Map(
-  (transcript.segments ?? []).flatMap((segment) => (segment.words ?? []).map((word, index) => [
+export const transcriptWordsById = (transcript) => {
+  const segments = new Map((transcript.segments ?? []).map((segment) => [segment.id, segment]));
+  const words = new Map((transcript.segments ?? []).flatMap((segment) => (segment.words ?? []).map((word, index) => [
     `${segment.id}:word-${String(index + 1).padStart(3, "0")}`,
     word
-  ]))
-);
+  ])));
+  if (transcript.timingAnchors !== undefined && !Array.isArray(transcript.timingAnchors)) {
+    throw new Error("Transcript timingAnchors must be an array");
+  }
+  for (const anchor of transcript.timingAnchors ?? []) {
+    const match = /^(.+):measured-word-\d{3,}$/.exec(anchor?.id ?? "");
+    const segment = match && segments.get(match[1]);
+    if (!segment || words.has(anchor.id)) throw new Error(`Invalid or duplicate measured timing anchor: ${anchor?.id}`);
+    if (anchor.timingProvenance !== "measured" || typeof anchor.text !== "string" || !anchor.text.trim()
+      || !Number.isFinite(anchor.start) || !Number.isFinite(anchor.end) || anchor.start < 0 || anchor.end <= anchor.start
+      || (Number.isFinite(segment.start) && anchor.start < segment.start - 1e-6)
+      || (Number.isFinite(segment.end) && anchor.end > segment.end + 1e-6)) {
+      throw new Error(`${anchor.id}: timing anchor requires measured text and a positive window within its segment`);
+    }
+    words.set(anchor.id, anchor);
+  }
+  return words;
+};
 
 export const resolveBeatRenderWindow = (beat, beatMap, wordsById) => {
   const fps = Number(beatMap.fps);
@@ -29,7 +48,7 @@ export const resolveBeatRenderWindow = (beat, beatMap, wordsById) => {
     }
     const startFrame = Math.min(...cues.map((cue) => cue.preMotionFrame));
     const endFrame = Math.max(...cues.map((cue) => cue.invisibleFrame));
-    if (endFrame <= startFrame || endFrame > Math.ceil(fullDuration * fps)) {
+    if (endFrame <= startFrame || endFrame > durationToFrames(fullDuration, fps)) {
       throw new Error(`${beat.id}: thoughtful-editorial-v1 cue render window is invalid`);
     }
     return {

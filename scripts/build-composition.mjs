@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { captionFrameWindow, durationToFrames, intersectFrameWindows, quantizeFrameWindow } from "./frame-window-utils.mjs";
+import { assertCaptionSequence, captionFrameWindow, durationToFrames, frameWindowTiming, intersectFrameWindows, quantizeFrameWindow } from "./frame-window-utils.mjs";
 import { THOUGHTFUL_EDITORIAL_PROFILE, resolveBeatRenderWindow, transcriptWordsById } from "./motion-window-utils.mjs";
+import { loadSpeechTiming, bindSpeechReveals, resolveRevealTimes } from "./mg-speech-timing.mjs";
 import { isVisualOrchestrationActive } from "./visual-orchestration-version.mjs";
 import { assertRegularContainedFile, sha256File } from "./workflow-utils.mjs";
 
@@ -18,7 +19,55 @@ const BEAT_ID_PATTERN = new RegExp(beatMapSchema.properties.beats.items.properti
 const seconds = (frames, fps) => frames / fps;
 const decimal = (value) => Number(Number(value).toFixed(6));
 const beatRootSelector = (beatId) => `[data-beat-id="${beatId}"]`;
-export const findContentCollision = (elements) => {
+export const clippedContentRect = (element, root, readStyle = globalThis.getComputedStyle) => {
+  const bounds = element.getBoundingClientRect();
+  let { left, top, right, bottom } = bounds;
+  // The canvas itself is deliberately excluded: genuine canvas overflow must still fail.
+  for (let parent = element.parentElement; parent && parent !== root; parent = parent.parentElement) {
+    const style = readStyle(parent);
+    if (["inline", "contents"].includes(style.display)) continue;
+    // An expanded clip edge can paint outside the ancestor's border rectangle.
+    // Keep raw bounds when that edge cannot be represented by this rectangle.
+    if ([style.overflowX, style.overflowY].includes("clip")
+      && style.overflowClipMargin && style.overflowClipMargin !== "0px") continue;
+    // Overflow does not clip positioned descendants whose containing block is
+    // outside this ancestor. Unknown/fixed positioning stays conservative.
+    let escapes = false;
+    for (let child = element; child && child !== parent; child = child.parentElement) {
+      const position = readStyle(child).position;
+      if (position === "fixed" || (position === "absolute"
+        && (!child.offsetParent || (child.offsetParent !== parent && !parent.contains(child.offsetParent))))) {
+        escapes = true;
+        break;
+      }
+    }
+    if (escapes) continue;
+    // Axis-specific clipping cannot be mapped using an AABB after rotation/skew.
+    let axisAligned = true;
+    for (let ancestor = parent; ancestor; ancestor = ancestor.parentElement) {
+      const computed = readStyle(ancestor);
+      const transform = computed.transform;
+      if (computed.perspective && computed.perspective !== "none") axisAligned = false;
+      if (computed.rotate && computed.rotate !== "none" && computed.rotate !== "0deg") axisAligned = false;
+      if (transform && transform !== "none") {
+        const matrix = /^matrix\(([^)]+)\)$/.exec(transform)?.[1].split(",").map(Number);
+        const matrix3d = /^matrix3d\(([^)]+)\)$/.exec(transform)?.[1].split(",").map(Number);
+        const planar = matrix?.length === 6 && matrix.every(Number.isFinite)
+          && matrix[1] === 0 && matrix[2] === 0 && matrix[0] > 0 && matrix[3] > 0;
+        const spatial = matrix3d?.length === 16 && matrix3d.every(Number.isFinite)
+          && [1, 2, 3, 4, 6, 7, 8, 9, 11].every((index) => matrix3d[index] === 0)
+          && matrix3d[0] > 0 && matrix3d[5] > 0 && matrix3d[10] > 0 && matrix3d[15] === 1;
+        if (!planar && !spatial) axisAligned = false;
+      }
+    }
+    if (!axisAligned) continue;
+    const clip = parent.getBoundingClientRect();
+    if (["hidden", "clip", "scroll", "auto"].includes(style.overflowX)) { left = Math.max(left, clip.left); right = Math.min(right, clip.right); }
+    if (["hidden", "clip", "scroll", "auto"].includes(style.overflowY)) { top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom); }
+  }
+  return { left, top, right, bottom, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
+};
+export const findContentCollision = (elements, readRect = (element) => element.getBoundingClientRect()) => {
   for (let leftIndex = 0; leftIndex < elements.length; leftIndex += 1) {
     for (let rightIndex = leftIndex + 1; rightIndex < elements.length; rightIndex += 1) {
       const left = elements[leftIndex];
@@ -26,8 +75,8 @@ export const findContentCollision = (elements) => {
       if (!(left.textContent.trim() || right.textContent.trim())
         || left.dataset.overlapPolicy === "intentional"
         || right.dataset.overlapPolicy === "intentional") continue;
-      const leftRect = left.getBoundingClientRect();
-      const rightRect = right.getBoundingClientRect();
+      const leftRect = readRect(left);
+      const rightRect = readRect(right);
       if (leftRect.left < rightRect.right - 1 && leftRect.right > rightRect.left + 1
         && leftRect.top < rightRect.bottom - 1 && leftRect.bottom > rightRect.top + 1) {
         return { left, right };
@@ -595,7 +644,18 @@ const assertThoughtfulEditorialModule = ({ beat, sources, materialsById, jobRoot
   }
 };
 
-const transformCaptionLayers = (source, startFrame, endFrame, fps) => source.replace(
+// Strip obsolete approval markers from legacy modules; face overlap needs no permission.
+export const bindFaceCoverApproval = (fragment) => fragment.replace(/<[a-z][^>]*>/gi,
+  (tag) => tag.replace(/\sdata-face-cover-approval\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, ""));
+
+const transformCaptionLayers = (source, startFrame, endFrame, fps) => {
+  const windows = [...source.matchAll(/<section\b(?=[^>]*\bmotion-caption-layer\b)[^>]*>/gi)].map(([tag]) => ({
+    id: /\bdata-caption-id=["']([^"']+)["']/.exec(tag)?.[1],
+    startFrame: Number(/\bdata-caption-start-frame=["'](\d+)["']/.exec(tag)?.[1]),
+    endFrame: Number(/\bdata-caption-end-frame=["'](\d+)["']/.exec(tag)?.[1])
+  }));
+  assertCaptionSequence(windows);
+  return source.replace(
   /<section\b(?=[^>]*\bmotion-caption-layer\b)[^>]*>[\s\S]*?<\/section>/gi,
   (section) => {
     const tag = /^<section\b[^>]*>/i.exec(section)?.[0];
@@ -607,14 +667,103 @@ const transformCaptionLayers = (source, startFrame, endFrame, fps) => source.rep
       { startFrame, endFrame }
     );
     if (!overlap) return "";
-    const localStart = seconds(overlap.startFrame - startFrame, fps);
-    const duration = seconds(overlap.endFrame - overlap.startFrame, fps);
+    const { start: localStart, duration } = frameWindowTiming({
+      startFrame: overlap.startFrame - startFrame,
+      endFrame: overlap.endFrame - startFrame
+    }, fps);
     const transformedTag = tag
       .replace(/\bdata-start=["'][^"']+["']/, `data-start="${localStart}"`)
       .replace(/\bdata-duration=["'][^"']+["']/, `data-duration="${duration}"`);
     return section.replace(tag, transformedTag);
   }
-);
+  );
+};
+
+const mediaAttribute = (tag, name) => new RegExp(`\\b${name}=["']([^"']*)["']`, "i").exec(tag)?.[1] ?? "";
+const replaceMediaAttribute = (tag, name, value) => {
+  const pattern = new RegExp(`\\b${name}\\s*=\\s*(["'])[^"']*\\1`, "i");
+  if (pattern.test(tag)) return tag.replace(pattern, `${name}="${value}"`);
+  return tag.replace(/\/?\s*>$/, ` ${name}="${value}"$&`);
+};
+
+// Direct media keeps its authored global window, while a chunk receives a
+// local media window and the corresponding source offset. GSAP retains the
+// authored global clock; its public seek methods translate chunk-local time.
+const transformTimedRootMedia = (source, startFrame, endFrame, fps, fullDuration) => {
+  const windowStart = seconds(startFrame, fps);
+  const windowEnd = seconds(endFrame, fps);
+  const windowDuration = windowEnd - windowStart;
+  return source.replace(/<(video|audio)\b[^>]*>/gi, (tag) => {
+    const startValue = mediaAttribute(tag, "data-start");
+    const durationValue = mediaAttribute(tag, "data-duration");
+    const clipStart = Number(startValue);
+    const clipDuration = durationValue === "__CUT_MOTION_DURATION__"
+      ? fullDuration
+      : Number(durationValue);
+    if (!Number.isFinite(clipStart) || !Number.isFinite(clipDuration) || clipDuration <= 0) return tag;
+    const clipEnd = clipStart + clipDuration;
+    const overlapStart = Math.max(clipStart, windowStart);
+    const overlapEnd = Math.min(clipEnd, windowEnd);
+    const sourceStart = Number(mediaAttribute(tag, "data-media-start"));
+    const mediaStart = Number.isFinite(sourceStart) ? sourceStart : 0;
+    if (overlapEnd <= overlapStart) {
+      return replaceMediaAttribute(
+        replaceMediaAttribute(
+          replaceMediaAttribute(tag, "data-start", decimal(windowDuration + 1 / fps)),
+          "data-duration",
+          decimal(1 / fps)
+        ),
+        "data-media-start",
+        decimal(mediaStart)
+      );
+    }
+    return replaceMediaAttribute(
+      replaceMediaAttribute(
+        replaceMediaAttribute(tag, "data-start", decimal(overlapStart - windowStart)),
+        "data-duration",
+        decimal(overlapEnd - overlapStart)
+      ),
+      "data-media-start",
+      decimal(mediaStart + overlapStart - clipStart)
+    );
+  });
+};
+
+// Root media groups use the authored global timeline in the full composition.
+// A localized chunk needs the same group lifetime expressed in local seconds,
+// otherwise the runtime contract compares local playhead time with global
+// group bounds and rejects an otherwise valid preview/render.
+const transformTimedRootMotionGroups = (source, startFrame, endFrame, fps, fullDuration) => {
+  const totalFrames = durationToFrames(fullDuration, fps);
+  if (startFrame === 0 && endFrame === totalFrames) return source;
+  const windowStart = seconds(startFrame, fps);
+  const windowEnd = seconds(endFrame, fps);
+  const windowDuration = windowEnd - windowStart;
+  return source.replace(/<[^>]*\bdata-motion-group(?:\s|=|>)[^>]*>/gi, (tag) => {
+    const groupStartValue = mediaAttribute(tag, "data-group-start");
+    const groupDurationValue = mediaAttribute(tag, "data-group-duration");
+    const groupStart = Number(groupStartValue);
+    const groupDuration = groupDurationValue === "__CUT_MOTION_DURATION__"
+      ? fullDuration
+      : Number(groupDurationValue);
+    if (!Number.isFinite(groupStart) || !Number.isFinite(groupDuration) || groupDuration <= 0) return tag;
+    const groupEnd = groupStart + groupDuration;
+    const overlapStart = Math.max(groupStart, windowStart);
+    const overlapEnd = Math.min(groupEnd, windowEnd);
+    if (overlapEnd <= overlapStart) {
+      return replaceMediaAttribute(
+        replaceMediaAttribute(tag, "data-group-start", decimal(windowDuration + 1 / fps)),
+        "data-group-duration",
+        decimal(1 / fps)
+      );
+    }
+    return replaceMediaAttribute(
+      replaceMediaAttribute(tag, "data-group-start", decimal(overlapStart - windowStart)),
+      "data-group-duration",
+      decimal(overlapEnd - overlapStart)
+    );
+  });
+};
 
 const thoughtfulEditorialWrapperAttributes = (beat, policy) => {
   const materialIds = [...new Set((beat.materialRefs ?? []).map((reference) => reference?.materialId).filter(Boolean))];
@@ -637,7 +786,7 @@ const thoughtfulEditorialTimeline = ({ beat, beatId, cues, fps, windowStartFrame
     if (!exitWord) throw new Error(`${beatId}: thoughtful-editorial-v1 exit trigger does not resolve`);
     const exitStartFrame = cue.invisibleFrame === windowEndFrame
       ? cue.invisibleFrame
-      : Math.ceil(Number(exitWord.end) * fps - 1e-6);
+      : durationToFrames(Number(exitWord.end), fps);
     const initialPhase = windowStartFrame < cue.preMotionFrame ? "pre-motion"
       : windowStartFrame < cue.firstLegibleFrame ? "entering"
         : windowStartFrame < cue.settledFrame ? "settling"
@@ -719,14 +868,15 @@ const thoughtfulEditorialTimeline = ({ beat, beatId, cues, fps, windowStartFrame
 
 const ensureLocalResourceLinks = (compositionDirectory, sourceDirectory) => {
   fs.mkdirSync(compositionDirectory, { recursive: true });
-  for (const name of ["assets", "caption.css"]) {
+  const stylesheets = fs.readdirSync(sourceDirectory).filter(name => name.endsWith(".css") && fs.statSync(path.join(sourceDirectory, name)).isFile());
+  for (const name of new Set(["assets", "caption.css", ...stylesheets])) {
     const source = path.join(sourceDirectory, name);
     if (!fs.existsSync(source)) continue;
     const target = path.join(compositionDirectory, name);
-    if (name === "caption.css") {
+    if (name.endsWith(".css")) {
       if (fs.existsSync(target) && fs.lstatSync(target).isSymbolicLink()) fs.unlinkSync(target);
       if (fs.existsSync(target) && !fs.lstatSync(target).isFile()) {
-        throw new Error("Localized caption.css must be a regular file");
+        throw new Error(`Localized ${name} must be a regular file`);
       }
       fs.copyFileSync(source, target);
       continue;
@@ -855,6 +1005,7 @@ export const buildComposition = (hyperframesDirectory, options = {}) => {
   }
 
   const totalFrames = durationToFrames(fullDuration, fps);
+  const frameGridDuration = totalFrames / fps;
   const startFrame = options.startFrame == null ? 0 : Number(options.startFrame);
   const endFrame = options.endFrame == null ? totalFrames : Number(options.endFrame);
   if (!Number.isInteger(startFrame) || !Number.isInteger(endFrame)
@@ -892,7 +1043,9 @@ export const buildComposition = (hyperframesDirectory, options = {}) => {
   }
   const moduleIds = moduleDirectories(directory);
   for (const beat of beats.values()) {
-    const requiresModule = beatMap.captionMode === "motion-copy" || beat.mgScope === "local";
+    const sharedStage = beat.motionProfile !== THOUGHTFUL_EDITORIAL_PROFILE
+      && ["stage/axis-stage-transition", "axis-stage-transition"].includes(beat.templateId ?? beat.mgComponent ?? beat.recipe);
+    const requiresModule = !sharedStage && (beatMap.captionMode === "motion-copy" || beat.mgScope === "local");
     if (requiresModule && !moduleIds.includes(beat.id)) {
       throw new Error(`${beat.id}: approved motion Beat is missing its MG module`);
     }
@@ -900,6 +1053,13 @@ export const buildComposition = (hyperframesDirectory, options = {}) => {
   const wordsById = transcriptWordsById(transcript);
   const sourcePath = path.join(directory, "index.template.html");
   let source = fs.readFileSync(sourcePath, "utf8");
+  for (const beat of beats.values()) {
+    if (["stage/axis-stage-transition", "axis-stage-transition"].includes(beat.templateId ?? beat.mgComponent ?? beat.recipe)
+      && !["CSS", "TIMELINE"].every(kind => source.includes(`/* CUT_MOTION_STAGE_${kind}_START */`)
+        && source.includes(`/* CUT_MOTION_STAGE_${kind}_END */`))) {
+      throw new Error(`${beat.id}: shared stage requires its assembled host CSS and timeline blocks`);
+    }
+  }
   for (const marker of [STYLE_MARKER, FRAGMENT_MARKER, TIMELINE_MARKER, COLLISION_MARKER]) {
     if (!source.includes(marker)) throw new Error(`Composition template is missing ${marker}`);
   }
@@ -911,6 +1071,7 @@ export const buildComposition = (hyperframesDirectory, options = {}) => {
   const timelines = [];
   const includedBeatIds = [];
   const runtimeEvidenceMaterialIds = new Set();
+  const speechTiming = [...beats.values()].some(beat => beat.templateData?.revealCues) ? loadSpeechTiming(jobRoot, fps) : null;
   let trackIndex = 10;
 
   for (const beatId of moduleIds) {
@@ -923,6 +1084,7 @@ export const buildComposition = (hyperframesDirectory, options = {}) => {
       return [filename, fs.readFileSync(filePath, "utf8").trim()];
     }));
     assertModuleSource(beatId, sources["fragment.html"], sources["timeline.mjs"]);
+    sources["fragment.html"] = bindFaceCoverApproval(sources["fragment.html"]);
     const thoughtfulEditorialBeat = beat.motionProfile === THOUGHTFUL_EDITORIAL_PROFILE;
     if (thoughtfulEditorialBeat) {
       assertThoughtfulEditorialModule({
@@ -935,6 +1097,14 @@ export const buildComposition = (hyperframesDirectory, options = {}) => {
     }
 
     const renderWindow = resolveBeatRenderWindow(beat, beatMap, wordsById);
+    if (beat.templateData?.revealCues) {
+      const revealTimes = resolveRevealTimes(beat, renderWindow, speechTiming);
+      if (thoughtfulEditorialBeat && (revealTimes.length !== beat.objectCues.length
+        || revealTimes.some((at, index) => beat.objectCues[index].firstLegibleFrame !== Math.round((at + renderWindow.start) * fps)))) {
+        throw new Error(`${beatId}: controlled object cues differ from measured speech reveals; regenerate and review the plan`);
+      }
+      sources["fragment.html"] = bindSpeechReveals(sources["fragment.html"], beat, renderWindow, speechTiming);
+    }
     const { startFrame: renderStartFrame, endFrame: renderEndFrame } = quantizeFrameWindow(
       renderWindow.start,
       renderWindow.end,
@@ -945,11 +1115,16 @@ export const buildComposition = (hyperframesDirectory, options = {}) => {
     const clipEndFrame = Math.min(renderEndFrame, endFrame);
     if (clipEndFrame <= clipStartFrame) continue;
 
-    const fragment = sources["fragment.html"].replace(/data-group-start=["']([0-9.]+)["']/g, (_, value) => (
-      `data-group-start="${decimal(Number(value) - windowStart)}"`
-    ));
+    const fragment = sources["fragment.html"].replace(/<[^>]*\bdata-motion-group(?:\s|=|>)[^>]*>/gi, (tag) => {
+      const groupStart = Number(mediaAttribute(tag, "data-group-start"));
+      const groupDuration = Number(mediaAttribute(tag, "data-group-duration"));
+      if (Number.isFinite(groupStart) && groupDuration > 0
+        && groupStart >= renderWindow.start - 1 / fps && groupStart + groupDuration <= renderWindow.end + 1 / fps) return tag;
+      return replaceMediaAttribute(replaceMediaAttribute(tag, "data-group-start", decimal(renderWindow.start)),
+        "data-group-duration", decimal(renderWindow.end - renderWindow.start));
+    });
     const rootSelector = beatRootSelector(beatId);
-    const relative = (value) => decimal(Number(value) - windowStart);
+    const relative = (value) => decimal(Number(value));
     includedBeatIds.push(beatId);
     if (thoughtfulEditorialBeat && beat.surfaceTreatment === "evidence-surface") {
       for (const reference of beat.materialRefs ?? []) runtimeEvidenceMaterialIds.add(reference.materialId);
@@ -972,8 +1147,8 @@ export const buildComposition = (hyperframesDirectory, options = {}) => {
         beatId,
         cues: beat.objectCues,
         fps,
-        windowStartFrame: startFrame,
-        windowEndFrame: endFrame,
+        windowStartFrame: 0,
+        windowEndFrame: totalFrames,
         wordsById
       });
       const profileModule = sources["timeline.mjs"].split("\n").map((line) => `  ${line}`).join("\n");
@@ -982,7 +1157,7 @@ export const buildComposition = (hyperframesDirectory, options = {}) => {
       timelines.push([
         `// ${beatId}`,
         "{",
-        `  const beat = Object.freeze({ id: ${JSON.stringify(beatId)}, start: ${relative(beat.start)}, duration: ${decimal(beat.end - beat.start)}, entryAnchorTime: ${relative(renderWindow.entryAnchorTime)}, exitAnchorTime: ${relative(renderWindow.exitAnchorTime)}, exitStartTime: ${relative(renderWindow.exitStartTime)}, exitDuration: ${renderWindow.exitDuration} });`,
+        `  const beat = Object.freeze({ id: ${JSON.stringify(beatId)}, start: ${relative(beat.start)}, end: ${relative(beat.end)}, duration: ${decimal(beat.end - beat.start)}, entryAnchorTime: ${relative(renderWindow.entryAnchorTime)}, exitAnchorTime: ${relative(renderWindow.exitAnchorTime)}, exitStartTime: ${relative(renderWindow.exitStartTime)}, exitDuration: ${renderWindow.exitDuration} });`,
         `  const root = document.querySelector(${JSON.stringify(rootSelector)});`,
         `  if (!root) throw new Error(${JSON.stringify(`${beatId}: Beat root is missing`)});`,
         "  const select = (selector) => [...root.querySelectorAll(selector)].filter((node) => root.contains(node));",
@@ -996,15 +1171,19 @@ export const buildComposition = (hyperframesDirectory, options = {}) => {
 
   const duration = seconds(endFrame - startFrame, fps);
   source = transformCaptionLayers(source, startFrame, endFrame, fps)
-    .replaceAll("__CUT_MOTION_DURATION__", String(duration))
-    .replaceAll("__CUT_MOTION_MEDIA_START__", String(windowStart))
     .replace(STYLE_MARKER, `${STYLE_MARKER}\n${styles.join("\n\n")}`)
     .replace(FRAGMENT_MARKER, `${FRAGMENT_MARKER}\n${fragments.join("\n")}`)
-    .replace(COLLISION_MARKER, `const findContentCollision = ${findContentCollision.toString()};`)
+    .replace(COLLISION_MARKER, `const clippedContentRect = ${clippedContentRect.toString()};\nconst findContentCollision = ${findContentCollision.toString()};`)
     .replace(TIMELINE_MARKER, `${TIMELINE_MARKER}\n${timelines.join("\n\n")}`);
-  source = source.replaceAll("data-template-composition-id", "data-composition-id");
+  source = transformTimedRootMedia(source, startFrame, endFrame, fps, frameGridDuration);
+  source = transformTimedRootMotionGroups(source, startFrame, endFrame, fps, frameGridDuration);
+  source = source
+    .replaceAll("__CUT_MOTION_DURATION__", String(duration))
+    .replaceAll("__CUT_MOTION_MEDIA_START__", String(windowStart))
+    .replaceAll("data-template-composition-id", "data-composition-id");
+  source = source.replace(/(<[^>]*\bdata-composition-id=["']main["'][^>]*\bdata-fps=["'])[^"']+(["'])/i, `$1${fps}$2`);
   if (options.videoOnly === true) {
-    source = source.replace(/\s*<audio\b[^>]*\bid=["']source-audio["'][^>]*><\/audio>\s*/i, "\n");
+    source = source.replace(/\s*<audio\b[^>]*><\/audio>\s*/gi, "\n");
   }
   const runtimeEvidenceSources = prepareRuntimeEvidenceMirrors({
     directory,

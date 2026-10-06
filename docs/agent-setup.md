@@ -141,3 +141,15 @@ CUT_MOTION_FONT=/absolute/path/to/smiley-sans-oblique.woff2 ./scripts/verify-rep
 ```
 
 Static verification is the CI-safe default. Runtime verification resolves the job-local HyperFrames runtime and executes real CLI, browser, and media checks.
+
+## Integrated maintenance and new planning
+
+The maintained fork is `lvzaixian/cut-motion`. `origin` identifies upstream; `personal` identifies the user fork. The pre-update branch is `local-workflow/pre-upstream-20261006`, preserving `db84840`; integration uses fixed upstream `41baefb`. Inspect Git state before future updates; never pull over local edits or bulk-regenerate old jobs. See [the integration guide](upstream-integration.md).
+
+This host's shared font/npm cache is `/Users/maxwellbrooks/Workspace/口播/.cut-motion/`. Exact installed runtimes and old-job fonts may be read for reuse; never move or rewrite them. Modules and links remain inside the new job. `CUT_MOTION_FONT_CACHE` and `CUT_MOTION_NPM_CACHE` support other hosts. No project `node_modules`, state or preview belongs in the delivery cache. Reuse needs no approval; downloads follow the existing scoped consent rule.
+
+`install-font.sh <job>` copies a licensed local font; use `--download` only after consent. A missing confirmed font blocks production rather than selecting sans-serif. Endpoint diagnosis is reserved for actual connection errors; a healthy probe does not establish that the active ChatCut tools can edit a project.
+
+New planning and measured timing are routed from [Workflow](workflow.md#unified-planning-for-new-jobs). Compose respects visual approval and media lock. `render:revision` writes `final.candidate.mp4`, which still needs title validation and promotion.
+
+Before publishing code, inspect the staged diff and run `node scripts/check-repository-privacy.mjs --staged`. Jobs, transcripts, credentials, runtime packages and font binaries remain ignored. This common-pattern check is repository maintenance and adds no video approval.

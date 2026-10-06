@@ -5,8 +5,11 @@ import { fileURLToPath } from "node:url";
 import { buildComposition } from "./build-composition.mjs";
 import {
   assertCreativeAuthorities,
+  assertCompositionReady,
   assertRegularContainedFile,
   beginWorkflowRevision,
+  collectCreativeAuthorityDrift,
+  collectWorkflowDrift,
   computeCreativeAuthorities,
   computeCreativeDocumentFingerprints,
   enableVisualArrangementReviewForMotionPlan,
@@ -20,6 +23,7 @@ import {
   saveWorkflow,
   sha256File,
   validateActiveReference,
+  visualPlanChanges,
   writeJsonAtomic
 } from "./workflow-utils.mjs";
 import { isVisualOrchestrationActive } from "./visual-orchestration-version.mjs";
@@ -27,7 +31,7 @@ import { isVisualOrchestrationActive } from "./visual-orchestration-version.mjs"
 const [workflowPath, command, ...rawArguments] = process.argv.slice(2);
 
 if (!workflowPath || !command) {
-  console.error("Usage: node workflow-state.mjs <workflow.json> <status|advance|approve-cover|approve|approve-creative|approve-visual-arrangement|revise|revise-visual-arrangement|fallback-auto|waive-v1-roughcut-selection-for-ffmpeg-fallback|replan|reopen|set-mode|set-caption-mode|set-axis-mode> [value] [--actor name] [--artifact path] [--note text]");
+  console.error("Usage: node workflow-state.mjs <workflow.json> <status|verify|lock-transcript|advance|approve-cover|approve|approve-creative|approve-visual-arrangement|revise|revise-visual-arrangement|fallback-auto|waive-v1-roughcut-selection-for-ffmpeg-fallback|replan|reopen|set-mode|set-caption-mode|set-axis-mode> [value] [--actor name] [--artifact path] [--note text]");
   process.exit(64);
 }
 
@@ -62,10 +66,13 @@ const workflow = ensureWorkflowDefaults(JSON.parse(fs.readFileSync(workflowPath,
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const roughCutSelectionPolicy = "reference-aligned-last-complete-take-v1";
 const v1FallbackWaiverCommand = "waive-v1-roughcut-selection-for-ffmpeg-fallback";
-const actor = String(options.actor ?? (command === "advance" ? "agent" : "user"));
+const actor = String(options.actor ?? (["advance", "lock-transcript"].includes(command) ? "agent" : "user"));
 const artifact = options.artifact ? String(options.artifact) : null;
 const note = options.note ? String(options.note) : null;
 const now = new Date().toISOString();
+const visualBaselinePath = path.join(jobRoot, "state", "visual-plan-baseline.json");
+let pendingVisualBaseline = null;
+let deliveryPromotion = null;
 const fullAuditRequested = workflow.mode === "auto" || workflow.roughCutReviewDecision === "automatic-fallback";
 const requiresVisualArrangementReview = () => workflow.visualArrangementReviewRequired === true;
 const isNonemptyString = (value) => typeof value === "string" && value.trim().length > 0;
@@ -134,7 +141,13 @@ const checkTitles = (renderedVideoPath) => runCheck(
   "Title package invalid"
 );
 const checkRoughCutSelection = () => {
-  if (workflow.roughCutSelectionPolicy === null) return;
+  if (workflow.roughCutSelectionPolicy === null) {
+    if (workflow.roughCutSelectionPolicyOrigin === roughCutSelectionPolicy
+      || fs.existsSync(path.join(jobRoot, "state", "roughcut-selection.json"))) {
+      throw new Error("ChatCut rough-cut selection cannot be disabled by a null policy; only historic workflows without a selection file may use null");
+    }
+    return;
+  }
   if (workflow.roughCutSelectionPolicy !== roughCutSelectionPolicy) {
     throw new Error(`Unknown rough-cut selection policy: ${workflow.roughCutSelectionPolicy}`);
   }
@@ -147,6 +160,50 @@ const promoteTitleSourceDelivery = (fromRelativePath, toRelativePath) => {
     titles.sourceDelivery.path = toRelativePath;
     writeJsonAtomic(titlesPath, titles);
   }
+};
+
+// ponytail: thrown failures roll back; abrupt termination retains backups, add journal recovery if crash-safe promotion is required.
+const beginDeliveryPromotion = (candidatePath, candidateReceiptPath, canonicalPath) => {
+  const backupDirectory = fs.mkdtempSync(path.join(jobRoot, "output", ".delivery-promotion-"));
+  const originalPaths = [canonicalPath, `${canonicalPath}.render.json`, path.join(jobRoot, "state", "titles.json"), path.resolve(workflowPath), candidatePath, candidateReceiptPath];
+  const originals = [];
+  try {
+    for (const [index, originalPath] of originalPaths.entries()) {
+      const backupPath = fs.existsSync(originalPath) ? path.join(backupDirectory, String(index)) : null;
+      if (backupPath) {
+        assertRegularContainedFile(jobRoot, originalPath, "Delivery promotion original");
+        try { fs.linkSync(originalPath, backupPath); }
+        catch { fs.copyFileSync(originalPath, backupPath, fs.constants.COPYFILE_EXCL); }
+      }
+      originals.push({ originalPath, backupPath });
+    }
+  } catch (error) {
+    fs.rmSync(backupDirectory, { recursive: true, force: true });
+    throw error;
+  }
+  deliveryPromotion = { backupDirectory, originals };
+};
+const rollbackDeliveryPromotion = () => {
+  if (!deliveryPromotion) return;
+  const transaction = deliveryPromotion;
+  const failures = [];
+  const restore = (operation) => { try { operation(); } catch (error) { failures.push(error); } };
+  for (const { originalPath, backupPath } of transaction.originals) {
+    restore(() => backupPath ? fs.renameSync(backupPath, originalPath) : fs.rmSync(originalPath, { force: true }));
+  }
+  for (const target of [path.join(jobRoot, "state", "titles.json"), path.resolve(workflowPath)]) {
+    restore(() => fs.rmSync(`${target}.${process.pid}.tmp`, { force: true }));
+  }
+  if (failures.length) throw new AggregateError(failures, `Delivery rollback incomplete; retained backups: ${transaction.backupDirectory}`);
+  fs.rmSync(transaction.backupDirectory, { recursive: true, force: true });
+  deliveryPromotion = null;
+};
+const commitDeliveryPromotion = () => {
+  if (!deliveryPromotion) return;
+  const { backupDirectory } = deliveryPromotion;
+  deliveryPromotion = null;
+  try { fs.rmSync(backupDirectory, { recursive: true, force: true }); }
+  catch (error) { console.warn(`Delivery committed; backup cleanup failed at ${backupDirectory}: ${error.message}`); }
 };
 
 const reconciliationPath = path.join(jobRoot, "state", "transcript-reconciliation.json");
@@ -374,6 +431,7 @@ const selectAutomaticFallback = (entryActor, decisionNote) => {
   console.warn(`${warning}.`);
 };
 const save = () => {
+  if (pendingVisualBaseline) writeJsonAtomic(visualBaselinePath, pendingVisualBaseline);
   saveWorkflow(workflowPath, workflow, now);
 };
 
@@ -464,6 +522,32 @@ if (command === "status") {
   process.exit(0);
 }
 
+if (command === "verify") {
+  const drift = [...collectWorkflowDrift(jobRoot, workflow), ...collectCreativeAuthorityDrift(jobRoot, workflow)];
+  if (drift.length) {
+    for (const entry of drift) console.error(`Drift: ${entry}`);
+    process.exit(1);
+  }
+  console.log("Workflow fingerprints match their recorded artifacts.");
+  process.exit(0);
+}
+if (command === "lock-transcript") {
+  if (!["transcription", "rough-cut", "rough-cut-export", "motion-plan"].includes(workflow.currentState)) {
+    throw new Error("Lock the source transcript during transcription or editing");
+  }
+  const transcriptPath = assertJobArtifact("state/transcript.json", "state");
+  const transcript = readJson(transcriptPath);
+  if (!Array.isArray(transcript.segments) || !transcript.segments.length) throw new Error("Source transcript has no segments");
+  // Locking timing never advances the workflow or accepts cover/selection decisions.
+  const alreadyLocked = Boolean(workflow.sourceTranscriptSha256);
+  lockSourceTranscript(transcriptPath);
+  if (!alreadyLocked) {
+    appendHistory("lock-transcript", workflow.currentState, workflow.currentState);
+    save();
+  }
+  console.log("Source transcript locked.");
+  process.exit(0);
+}
 if (command === "set-mode") {
   const mode = positionals[0];
   if (!["review", "auto"].includes(mode)) throw new Error(`Invalid mode: ${mode}`);
@@ -589,7 +673,9 @@ if (command === "approve-visual-arrangement") {
   if (!requiresVisualArrangementReview()) throw new Error("Visual arrangement review is not required for this legacy workflow");
   if (options.actor !== "user") throw new Error("Visual arrangement approval requires actor user");
   if (!isNonemptyString(note)) throw new Error("Visual arrangement approval requires --note");
-  validateCreativePackage(note, actor);
+  // Validate the frozen package first; approval must never rebind a changed plan.
+  assertCreativeAuthorities(jobRoot, workflow);
+  checkReconciliation(false);
   recordVisualArrangementDecision("approved", "manual-approved", actor, note);
   move("composition", "approve-visual-arrangement", actor);
   save();
@@ -705,6 +791,7 @@ if (command === "reopen") {
 const currentStage = stages[workflow.currentState];
 if (!currentStage) throw new Error(`Unknown current state: ${workflow.currentState}`);
 
+try {
 if (command === "advance") {
   if (currentStage.terminal) throw new Error("Workflow is already complete");
   if (currentStage.gate) {
@@ -799,7 +886,22 @@ if (command === "advance") {
         workflow.visualAxisModeSource = "default";
       }
       if (!fs.existsSync(beatMapPath)) throw new Error("Motion plan requires state/beat-map.json");
-      workflow.visualPlanSha256 = sha256File(beatMapPath);
+      const nextBeatMapSha256 = sha256File(beatMapPath);
+      let baseline = null;
+      if (fs.existsSync(visualBaselinePath)) {
+        assertRegularContainedFile(path.join(jobRoot, "state"), visualBaselinePath, "Visual plan baseline");
+        baseline = readJson(visualBaselinePath);
+      }
+      const beatMap = readJson(beatMapPath);
+      if (baseline?.sha256 && baseline.sha256 !== nextBeatMapSha256 && baseline.beatMap) {
+        appendHistory("visual-plan-change", "motion-plan", "motion-plan");
+        Object.assign(workflow.history.at(-1), {
+          beforeSha256: baseline.sha256, afterSha256: nextBeatMapSha256,
+          baselineAvailable: true, changes: visualPlanChanges(baseline.beatMap, beatMap)
+        });
+      }
+      workflow.visualPlanSha256 = nextBeatMapSha256;
+      pendingVisualBaseline = { sha256: nextBeatMapSha256, beatMap };
       if (fullAuditRequested || requiresVisualArrangementReview()) {
         validateCreativePackage(
           fullAuditRequested ? "Automatic full-audit validation" : "Visual arrangement package validated",
@@ -811,6 +913,9 @@ if (command === "advance") {
       }
     }
     if (workflow.currentState === "composition") {
+      // Gate and hash checks precede all composition writes.
+      if (requiresVisualArrangementReview()) assertCompositionReady(jobRoot, workflow);
+      else if (fullAuditRequested || requiresCadenceCreativeLock()) assertCreativeAuthorities(jobRoot, workflow);
       const built = buildComposition(path.join(jobRoot, "hyperframes"));
       if (path.resolve(artifactPath) !== path.resolve(built.outputPath)) {
         throw new Error("Composition advance requires the deterministic hyperframes/index.html build artifact");
@@ -843,8 +948,15 @@ if (command === "advance") {
         if (path.basename(artifactPath) !== "final.candidate.mp4") {
           throw new Error("A delivery revision must use output/final.candidate.mp4");
         }
+        if (fs.existsSync(receiptPath)) assertRegularContainedFile(jobRoot, receiptPath, "Candidate render receipt");
+        beginDeliveryPromotion(artifactPath, receiptPath, canonicalDeliveryPath);
         fs.renameSync(artifactPath, canonicalDeliveryPath);
-        if (fs.existsSync(receiptPath)) fs.renameSync(receiptPath, `${canonicalDeliveryPath}.render.json`);
+        if (fs.existsSync(receiptPath)) {
+          fs.renameSync(receiptPath, `${canonicalDeliveryPath}.render.json`);
+        } else {
+          // A review-mode delivery without a receipt must not retain the old video's receipt.
+          fs.rmSync(`${canonicalDeliveryPath}.render.json`, { force: true });
+        }
         promoteTitleSourceDelivery("output/final.candidate.mp4", "output/final.mp4");
       }
       workflow.lastKnownGoodDelivery = {
@@ -897,4 +1009,10 @@ if (command === "advance") {
   throw new Error(`Unknown command: ${command}`);
 }
 save();
+commitDeliveryPromotion();
+} catch (error) {
+  try { rollbackDeliveryPromotion(); }
+  catch (rollbackError) { throw new AggregateError([error, rollbackError], "Delivery promotion failed and rollback was incomplete"); }
+  throw error;
+}
 console.log(`Workflow state: ${workflow.currentState}`);

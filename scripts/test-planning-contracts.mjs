@@ -47,7 +47,7 @@ try {
     type: "array",
     minItems: 1,
     uniqueItems: true,
-    items: { type: "string", pattern: "^.+:word-[0-9]{3}$" }
+    items: { type: "string", pattern: "^.+:(?:measured-)?word-[0-9]{3,}$" }
   });
   assert.deepEqual(annotationDecisionSchema.properties.fallback, { type: "string", minLength: 1 });
   assert.deepEqual(argumentDecisionSchema.required, ["mode", "informationDelta", "objectFamily", "visualVerb", "evolutionMode", "argumentStates", "fallback"]);

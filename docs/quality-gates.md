@@ -7,6 +7,7 @@ The default path is human-reviewed and intentionally light. Machine checks estab
 - Keep the original source unchanged.
 - Open the ChatCut timeline and wait for the user's rough-cut decision before exporting.
 - After approval, export once and run only the basic rough-cut/media lock.
+- Reconcile released wording, generate the caption and motion plans, and present the visual arrangement package. Wait for the user's decision before composition. Content analysis and the two cover selections remain prerequisites in the canonical workflow.
 - Build the HyperFrames composition, render once, and verify that the delivery has readable video/audio, dimensions, frame rate, duration, and a non-empty file.
 - Let the user judge the final captions, MG, timing, semantics, and visual quality.
 
@@ -14,7 +15,7 @@ Do not run the three-threshold rough-cut audit, full snapshot/layout/font/inform
 
 ## Explicit `auto` / `fallback-auto` checks
 
-These checks run only when the user selects the automatic path or explicitly asks for the relevant audit:
+The additional three-threshold rough-cut audit and standard-preview comparison run only when the user selects the automatic path or explicitly requests them. Shared checks below still protect approved wording, visual authorities and render inputs in Review mode:
 
 - rough-cut: three silence thresholds, canonical trim finalization, seam checks, and transcript lock;
 - transcript/captions: reconciliation, semantic one-line caption plan, caption installation, and timing checks;

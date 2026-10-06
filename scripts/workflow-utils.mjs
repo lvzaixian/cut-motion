@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { isVisualOrchestrationActive } from "./visual-orchestration-version.mjs";
 
 export const readJson = (filePath) => JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -29,6 +31,90 @@ export const sha256File = (filePath) => {
 };
 
 export const sha256Text = (value) => crypto.createHash("sha256").update(value).digest("hex");
+
+const defaultBrowserCachePath = () => {
+  const version = process.env.HYPERFRAMES_BROWSER_VERSION ?? "152.0.7928.2";
+  const platform = process.platform === "darwin"
+    ? (process.arch === "arm64" ? "mac_arm" : "mac")
+    : process.platform === "linux"
+      ? (process.arch === "arm64" ? "linux_arm" : "linux")
+      : process.platform === "win32"
+        ? (process.arch === "arm64" || process.arch === "x64" ? "win64" : "win32")
+        : null;
+  if (!platform) return null;
+  const executableDirectory = platform === "mac_arm"
+    ? "chrome-headless-shell-mac-arm64"
+    : platform === "mac"
+      ? "chrome-headless-shell-mac-x64"
+      : platform === "linux_arm"
+        ? (version.localeCompare("153.0.8001.0", undefined, { numeric: true }) < 0
+          ? "chrome-headless-shell-linux64" : "chrome-headless-shell-linux-arm64")
+        : platform === "linux"
+          ? "chrome-headless-shell-linux64"
+          : platform === "win64"
+            ? "chrome-headless-shell-win64"
+            : "chrome-headless-shell-win32";
+  const executableName = platform.startsWith("win") ? "chrome-headless-shell.exe" : "chrome-headless-shell";
+  const exactPath = path.join(
+    os.homedir(),
+    ".cache",
+    "hyperframes",
+    "chrome",
+    "chrome-headless-shell",
+    `${platform}-${version}`,
+    executableDirectory,
+    executableName
+  );
+  try {
+    if (fs.existsSync(exactPath) && fs.statSync(exactPath).isFile()) return exactPath;
+    const puppeteerRoot = path.join(os.homedir(), ".cache", "puppeteer", "chrome-headless-shell");
+    const versions = fs.readdirSync(puppeteerRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }));
+    for (const installedVersion of versions) {
+      const candidate = path.join(puppeteerRoot, installedVersion, executableDirectory, executableName);
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+    }
+  } catch {
+    // Keep the exact HyperFrames cache path in the fingerprint when no browser is installed yet.
+  }
+  return exactPath;
+};
+
+export const resolveRendererEnvironment = () => {
+  const rendererEnvironmentKeys = [
+    "HYPERFRAMES_BROWSER_PATH",
+    "HYPERFRAMES_BROWSER_VERSION",
+    "PRODUCER_HEADLESS_SHELL_PATH",
+    "PRODUCER_BROWSER_GPU_MODE",
+    "PRODUCER_EXPERIMENTAL_FAST_CAPTURE",
+    "PRODUCER_MAX_WORKERS",
+    "CUT_MOTION_RENDER_WORKERS",
+    "PRODUCER_ENABLE_BROWSER_POOL"
+  ];
+  const rendererEnvironment = Object.fromEntries(
+    rendererEnvironmentKeys.map((key) => [key, process.env[key] ?? null])
+  );
+  const browserPath = process.env.HYPERFRAMES_BROWSER_PATH
+    ?? process.env.PRODUCER_HEADLESS_SHELL_PATH
+    ?? defaultBrowserCachePath();
+  let browserSha256 = null;
+  let browserMode = null;
+  if (browserPath) {
+    try {
+      const browserStat = fs.statSync(browserPath);
+      if (browserStat.isFile()) {
+        browserSha256 = sha256File(browserPath);
+        browserMode = browserStat.mode & 0o7777;
+      }
+    } catch {
+      // The renderer will report an invalid browser path; keep it in the fingerprint.
+    }
+  }
+
+  return { platform: process.platform, architecture: process.arch, browserPath, browserSha256, browserMode, rendererEnvironment };
+};
 
 export const resolveLockedHyperframesCli = (jobRootInput) => {
   const jobRoot = path.resolve(jobRootInput);
@@ -62,7 +148,9 @@ export const resolveLockedHyperframesCli = (jobRootInput) => {
     throw new Error("Installed HyperFrames CLI declaration escapes its package");
   }
   const localBinaryPath = path.join(hyperframesRoot, "node_modules", ".bin", "hyperframes");
-  if (!fs.existsSync(expectedBinaryPath) || !fs.statSync(expectedBinaryPath).isFile()) {
+  const expectedBinaryStat = fs.existsSync(expectedBinaryPath) ? fs.statSync(expectedBinaryPath) : null;
+  if (!expectedBinaryStat?.isFile()
+    || (process.platform !== "win32" && (expectedBinaryStat.mode & 0o111) === 0)) {
     throw new Error("Installed HyperFrames CLI binary is missing");
   }
   if (!fs.existsSync(localBinaryPath)) throw new Error("Job-local HyperFrames CLI link is missing");
@@ -72,14 +160,17 @@ export const resolveLockedHyperframesCli = (jobRootInput) => {
     throw new Error("Job-local HyperFrames CLI does not resolve to the declared package binary");
   }
 
+  const environment = resolveRendererEnvironment();
   return {
     binaryPath: localBinaryPath,
+    environment,
     version: installedPackage.version,
     fingerprint: sha256Text([
       expectedVersion,
       installedPackage.version,
       sha256File(installedPackagePath),
-      sha256File(expectedBinaryRealPath)
+      sha256File(expectedBinaryRealPath),
+      JSON.stringify(environment)
     ].join(":"))
   };
 };
@@ -202,6 +293,31 @@ export const beginWorkflowRevision = (workflow, { invalidateVisualPlan = true } 
   workflow.revisionId += 1;
   if (invalidateVisualPlan) workflow.visualPlanSha256 = null;
 };
+// Only changed fields enter history; the latest comparison baseline stays off the always-read workflow record.
+export const visualPlanChanges = (before, after) => {
+  const changes = [];
+  const changedFields = (left, right, exclude = []) => Object.fromEntries(
+    [...new Set([...Object.keys(left), ...Object.keys(right)])]
+      .filter((key) => !exclude.includes(key) && !isDeepStrictEqual(left[key], right[key]))
+      .map((key) => [key, { before: left[key] ?? null, after: right[key] ?? null }])
+  );
+  const planFields = changedFields(before, after, ["beats"]);
+  if (!isDeepStrictEqual((before.beats ?? []).map((beat) => beat.id), (after.beats ?? []).map((beat) => beat.id))) {
+    planFields.beatOrder = { before: (before.beats ?? []).map((beat) => beat.id), after: (after.beats ?? []).map((beat) => beat.id) };
+  }
+  if (Object.keys(planFields).length) changes.push({ beatId: null, change: "updated", fields: planFields });
+  const oldBeats = new Map((before.beats ?? []).map((beat) => [beat.id, beat]));
+  const newBeats = new Map((after.beats ?? []).map((beat) => [beat.id, beat]));
+  for (const id of new Set([...oldBeats.keys(), ...newBeats.keys()])) {
+    const oldBeat = oldBeats.get(id), newBeat = newBeats.get(id);
+    if (!oldBeat || !newBeat) changes.push({ beatId: id, change: oldBeat ? "removed" : "added", before: oldBeat ?? null, after: newBeat ?? null });
+    else {
+      const fields = changedFields(oldBeat, newBeat);
+      if (Object.keys(fields).length) changes.push({ beatId: id, change: "updated", fields });
+    }
+  }
+  return changes;
+};
 export const saveWorkflow = (workflowPath, workflow, now = new Date().toISOString()) => {
   workflow.completed = workflow.currentState === "complete";
   workflow.updatedAt = now;
@@ -321,6 +437,118 @@ export const assertCreativeAuthorities = (jobRoot, workflow, { requireApproved =
     }
   }
   return confirmation;
+};
+
+// Shared change-control fields retain the local review contract.
+export const REAPPROVAL_FIELD_NAMES = [
+  "caption-segmentation",
+  "mg-node-set",
+  "mg-count",
+  "on-screen-copy",
+  "support-role",
+  "visual-style",
+  "primary-flow-axis",
+  "visual-reference",
+  "axis-mode",
+  "mg-cadence",
+  "focal-placement",
+  "face-cover-rationale",
+  "materials",
+  "object-cues",
+  "visual-arrangement-table"
+];
+
+// This broad scan is diagnostic; local approval and media locks remain hard gates.
+const workflowDriftTargets = (jobRoot, workflow) => {
+  const state = workflow.currentState;
+  const targets = [];
+  const record = (label, relativePath, sha256) => {
+    if (typeof relativePath === "string" && relativePath && typeof sha256 === "string" && sha256) {
+      targets.push({ label, relativePath, sha256 });
+    }
+  };
+  record("visual plan", "state/beat-map.json", workflow.visualPlanSha256);
+  if (state !== "composition") {
+    record("composition", workflow.compositionArtifactPath, workflow.compositionArtifactSha256);
+  }
+  record("authoritative media", workflow.authoritativeMediaPath, workflow.authoritativeMediaSha256);
+  record("trim plan", "state/trim-plan.json", workflow.trimPlanSha256);
+  record("creative confirmation", "state/creative-confirmation.json", workflow.creativeConfirmationSha256);
+  for (const [name, fingerprint] of Object.entries(workflow.creativeDocumentFingerprints ?? {})) {
+    record(`creative document ${name}`, fingerprint?.path, fingerprint?.sha256);
+  }
+  if (workflow.lastKnownGoodDelivery) {
+    record("last known-good delivery", workflow.lastKnownGoodDelivery.path, workflow.lastKnownGoodDelivery.sha256);
+  }
+  return targets.map((target) => ({ ...target, absolutePath: path.resolve(jobRoot, target.relativePath) }));
+};
+
+/**
+ * The creative package declares which artifact fingerprints the approval
+ * covers. Checking them is deliberately separate from the generic drift scan:
+ * a scaffolded job legitimately has an empty declaration until its plan is
+ * generated, so only the composition transition (where the package must be
+ * settled) and an explicit `verify` treat a mismatch as a failure.
+ */
+export const collectCreativeAuthorityDrift = (jobRoot, workflow) => {
+  const confirmationPath = path.join(jobRoot, "state", "creative-confirmation.json");
+  if (!fs.existsSync(confirmationPath)) return [];
+  const confirmation = readJson(confirmationPath);
+  if (!workflow.creativeConfirmationSha256 && !Object.keys(confirmation.authorities ?? {}).length) return [];
+  try {
+    assertCreativeAuthorities(jobRoot, workflow, { requireApproved: Boolean(workflow.creativeConfirmationSha256) });
+    return [];
+  } catch (error) {
+    return [`creative authorities: ${error.message}`];
+  }
+};
+
+export const collectWorkflowDrift = (jobRoot, workflow) => {
+  const drift = [];
+  for (const target of workflowDriftTargets(jobRoot, workflow)) {
+    if (!isPathInside(jobRoot, target.absolutePath)) {
+      drift.push(`${target.label}: recorded path escapes the job`);
+      continue;
+    }
+    if (!fs.existsSync(target.absolutePath)) {
+      drift.push(`${target.label}: ${target.relativePath} is gone but ${target.sha256.slice(0, 12)}… is still recorded`);
+      continue;
+    }
+    const actual = sha256File(target.absolutePath);
+    if (actual !== target.sha256) {
+      drift.push(`${target.label}: ${target.relativePath} is ${actual.slice(0, 12)}… but the workflow records ${target.sha256.slice(0, 12)}…`);
+    }
+  }
+  return drift;
+};
+
+export const assertCompositionReady = (jobRoot, workflow) => {
+  if (workflow.currentState !== "composition") throw new Error("Composition requires the composition state");
+  if (!["manual-approved", "automatic-fallback"].includes(workflow.roughCutReviewDecision)) {
+    throw new Error("Composition requires an approved rough-cut decision");
+  }
+  if (typeof workflow.authoritativeMediaPath !== "string" || path.isAbsolute(workflow.authoritativeMediaPath)) {
+    throw new Error("Locked rough-cut media requires a job-relative path");
+  }
+  const mediaPath = path.resolve(jobRoot, workflow.authoritativeMediaPath);
+  assertRegularContainedFile(jobRoot, mediaPath, "Locked rough-cut media");
+  assertRegularContainedFile(path.join(jobRoot, "roughcut"), mediaPath, "Locked rough-cut media");
+  if (!workflow.authoritativeMediaSha256 || sha256File(mediaPath) !== workflow.authoritativeMediaSha256) {
+    throw new Error("Locked rough-cut media changed or is not bound");
+  }
+  if (workflow.visualArrangementReviewRequired === true) {
+    const roughCutStatus = workflow.roughCutReviewDecision === "manual-approved" ? "approved" : "automatic-fallback";
+    if (workflow.gates?.["rough-cut-review"]?.status !== roughCutStatus) {
+      throw new Error("Composition requires an approved rough-cut review gate");
+    }
+    const decision = workflow.visualArrangementReviewDecision;
+    const gate = workflow.gates?.["visual-arrangement-review"];
+    if (!(["manual-approved", "automatic-accepted"].includes(decision))
+      || gate?.status !== (decision === "manual-approved" ? "approved" : "automatic-accepted")) {
+      throw new Error("Composition requires approved visual arrangement review");
+    }
+    assertCreativeAuthorities(jobRoot, workflow);
+  }
 };
 
 export const invalidateCreativeArtifacts = (jobRoot, note = "Dependent creative inputs changed") => {

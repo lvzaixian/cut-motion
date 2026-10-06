@@ -2,6 +2,21 @@
 
 Each job owns its source, state, previews, logs, and output under `jobs/<job-id>/`. Never overwrite the source or place generated media in the repository root.
 
+## Active-state route
+
+On resume, run `workflow-state.mjs ... status` and load guidance for the active state. New productions still read every required intake standard. Do not repeat completed transcription, upload, export or analysis merely because a conversation resumed.
+
+| State | Guidance |
+| --- | --- |
+| `intake` / `transcription` | Setup, content analysis, cover and applicable unscripted standard |
+| `rough-cut` / `rough-cut-review` | Trim standard, selection and recorded user decision |
+| `rough-cut-export` | Exact export identity, media promotion and basic lock |
+| `motion-plan` | Unified input, subtitle segmentation, MG selection and measured timing |
+| `visual-arrangement-review` | Current creative package and frozen hashes; wait for user decision |
+| `composition` | Approved cues, templates/custom modules and composition contract |
+| `render` | Current renderer receipt and title package |
+| `complete` | Revision standard only when revising |
+
 ## Stage contracts
 
 | State | Contract |
@@ -44,3 +59,29 @@ For screenshots, that standard requires an early complete material inventory, wh
 ## Revisions
 
 Use `reopen rough-cut|motion-plan|composition|delivery` for completed jobs. Parameter-only changes should use an affected-window preview before a full delivery render. Delivery revisions render to `output/final.candidate.mp4`, require a regenerated title package bound to that candidate, and are promoted by the workflow after media and title-package verification.
+
+## Unified planning for new jobs
+
+Prepare one `state/planning-inputs.json` for confirmed wording exceptions, semantic caption splits, MG choices, supported visual decisions and material registration. Save every approved main-timeline preview page in `state/chatcut-main-timeline.json`. Prefer sparse `captionEdits`; explicit timed cues remain available for intentional boundaries. Local recording-backed wording and semantic one-line rules still apply.
+
+After the approved export is promoted and locked, run `node scripts/generate-plan.mjs <job> --write` to derive captions, Beat Map, reconciliation and the three human-readable plans together. Existing reconciled transcripts and authored modules are protected; intentional replacement requires reopening the affected stage and the replacement flag. Old jobs without the new input/snapshot keep their existing approved plans.
+
+Choose among 13 semantic templates by the viewer's current question. Text, item counts, position, safe regions, V2 decisions and `materials` follow this episode. Controlled production uses one `motion.reveal` per object cue. Stage helpers belong to the existing shared stage and never create another speaker.
+
+An entry's `:word-001` is a whole phrase. Before presenting the visual package, resolve the MG's needed keywords from measured words, including actual cut/rate mapping. Persist separate `transcript.timingAnchors` with provenance; do not duplicate those words in the subtitle text or use interpolation as measured evidence. Composition must not change approved object timing.
+
+Validate internally with `approve-creative`, advance to `visual-arrangement-review`, and obtain the existing package decision. `compose-job.mjs` stops at this pending gate and checks approval plus actual A-roll hash before assembly. A valid plan edited while pending review cannot silently inherit the old package hashes.
+
+## Waveform proposals and export reuse
+
+`prepare-rough-cut.mjs <job> tighten <saved-timeline-pages.json>...` computes a batch proposal after semantic selection. It supports one source, one continuous track, integer fps and 1x. Signal thresholds cannot decide whether breath, quiet words or natural pauses are disposable. After authorized edits, read back the actual timeline and refresh `windows`; never adopt a proposed map before execution. `windows` maps explicit rates without rescanning audio.
+
+After rough-cut approval, start or resume one clean export. Record project/timeline/render IDs, returned filename and reported byte size in `state/roughcut-export.json`; match that identity on recovery. Recover the same output before submitting a replacement. Prepare input while export runs; composition still waits for media lock and visual approval. Promotion preserves export copies.
+
+## MG final-state self-review
+
+The composition summary can provide one snapshot batch for affected MGs after their last reveal settles and before exit. Inspect complete copy, orphan lines, overflow, safe regions and material readability. This is an internal visual aid, not a user decision or proof of motion/audio. Complex evidence groups and timing defects still use encoded context windows including entry, full visibility and exit.
+
+## Render reuse
+
+Use the job's `render` or `render:revision` entrypoint. Receipts must match composition, media, renderer/browser environment and frame grid; a filename alone cannot prove reuse. Ordinary jobs remain monolithic; chunks serve a known benefit or long-media failure. Cache contract changes may invalidate old chunks. Revisions use `final.candidate.mp4` and require candidate-bound titles before promotion.

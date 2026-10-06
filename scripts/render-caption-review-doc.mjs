@@ -42,13 +42,13 @@ const cueTextForBeat = (beat) => {
 const lines = [
   "# 字幕与 MG 审核方案",
   "",
-  "> 本文是实现前合同。字幕切分、MG 节点、最终上屏原文、信息增量和视觉样式经用户批准后，才允许进入样片或全片制作。",
+  "> 本文是视觉编排包的字幕与 MG 索引。字幕切分、节点、上屏原文和样式在同一包中确认后才进入合成。",
   "",
   `- 字幕：${captions.cues.length} 条；每条严格单行；文字与时序均来自录音校正后的逐字稿。`,
   "- 切分：先按完整词组、短语、分句和气口切，再检查实测字宽；禁止机械按字符数截断。",
   "- 约束：虚词不得单独成 cue；受保护词组不得跨 cue；每条至少 0.5 秒，目标 0.8–2.5 秒、4–10.5 个显示单位。",
-  `- MG：${localBeats.length} 个精选语义节点；不设最低频率，不为“画面活跃”补节点。`,
-  "- 轴向：A 轴叠加模式；口播保持全屏，MG 局部出现并完整退场。",
+  `- MG：${localBeats.length} 个精选语义节点；按信息增益与当前编排规则选择，不为装饰补节点。`,
+  `- 视觉轴以 Beat Map 为准：${[...new Set(localBeats.map(beat => beat.axis))].join(" / ") || "无 MG"}；字幕、PiP、证据与必要 UI 安全区保持有效。`,
   "",
   "## 完整字幕切分",
   "",
@@ -70,10 +70,10 @@ lines.push(
   "| --- | --- | --- | --- | --- | --- | --- | --- |"
 );
 for (const beat of localBeats) {
-  const cueRange = beat.captionCueIds.length === 1
-    ? beat.captionCueIds[0]
-    : `${beat.captionCueIds[0]}–${beat.captionCueIds.at(-1)}`;
-  lines.push(`| ${beat.id} | ${formatTime(beat.start)}–${formatTime(beat.end)} / ${cueRange} | ${escapeCell(cueTextForBeat(beat))} | ${escapeCell(beat.onScreenCopy.join(" / "))} | ${escapeCell(beat.viewerQuestion)} | ${escapeCell(beat.supportRole)} | ${escapeCell(beat.removalLoss)} | ${escapeCell(beat.visualStyle)} |`);
+  const cueRange = (beat.captionCueIds ?? []).length === 1
+    ? (beat.captionCueIds ?? [])[0]
+    : `${(beat.captionCueIds ?? [])[0]}–${(beat.captionCueIds ?? []).at(-1)}`;
+  lines.push(`| ${beat.id} | ${formatTime(beat.start)}–${formatTime(beat.end)} / ${cueRange} | ${escapeCell(cueTextForBeat(beat))} | ${escapeCell((beat.onScreenCopy ?? []).join(" / "))} | ${escapeCell(beat.viewerQuestion)} | ${escapeCell(beat.supportRole)} | ${escapeCell(beat.removalLoss)} | ${escapeCell(beat.visualStyle)} |`);
 }
 
 lines.push(
@@ -84,7 +84,7 @@ lines.push(
   "| --- | --- | --- |"
 );
 for (const beat of beatMap.beats.filter((candidate) => candidate.mgScope === "none")) {
-  lines.push(`| ${formatTime(beat.start)}–${formatTime(beat.end)} | ${escapeCell(cueTextForBeat(beat))} | 口播与字幕已完整表达；增加 MG 不能产生足以抵消注意力成本的具体信息增量。 |`);
+  lines.push(`| ${formatTime(beat.start)}–${formatTime(beat.end)} | ${escapeCell(cueTextForBeat(beat))} | ${escapeCell(beat.noMgReason ?? "未声明") } |`);
 }
 
 lines.push(

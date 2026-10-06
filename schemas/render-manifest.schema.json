@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "cut-motion Render Manifest",
   "type": "object",
-  "required": ["schemaVersion", "fps", "width", "height", "totalFrames", "duration", "audio", "designLanguageFingerprint", "sharedDependencySha256", "beats", "captions", "contentManifestSha256", "chunks"],
+  "required": ["schemaVersion", "fps", "width", "height", "totalFrames", "duration", "audio", "renderer", "designLanguageFingerprint", "sharedDependencySha256", "beats", "captions", "contentManifestSha256", "chunks"],
   "properties": {
     "schemaVersion": { "const": "2.0.0" },
     "fps": { "type": "number", "exclusiveMinimum": 0 },
@@ -10,6 +10,27 @@
     "height": { "type": "integer", "minimum": 1 },
     "totalFrames": { "type": "integer", "minimum": 1 },
     "duration": { "type": "number", "exclusiveMinimum": 0 },
+    "renderer": {
+      "type": "object",
+      "required": ["fingerprint", "environment"],
+      "properties": {
+        "fingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "environment": {
+          "type": "object",
+          "required": ["platform", "architecture", "browserPath", "browserSha256", "browserMode", "rendererEnvironment"],
+          "properties": {
+            "platform": { "type": "string", "minLength": 1 },
+            "architecture": { "type": "string", "minLength": 1 },
+            "browserPath": { "type": ["string", "null"] },
+            "browserSha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+            "browserMode": { "type": ["integer", "null"], "minimum": 0 },
+            "rendererEnvironment": { "type": "object", "additionalProperties": { "type": ["string", "null"] } }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "audio": {
       "type": "object",
       "required": ["sourcePath", "sourceSha256"],

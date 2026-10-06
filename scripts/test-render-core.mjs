@@ -15,7 +15,9 @@ import {
   renderOutput,
   renderChunkedOutput,
   validateCacheReceipt,
-  verifyAssemblyReceipt
+  verifyAssemblyReceipt,
+  resolvePostMixAudioTags,
+  singlePassAudioSupported
 } from "./render-chunks.mjs";
 import { computeCreativeAuthorities, computeDesignLanguageFingerprint, readJson, sha256File, writeJsonAtomic } from "./workflow-utils.mjs";
 
@@ -193,6 +195,19 @@ try {
 
   const manifest = deriveRenderManifest(jobRoot, { designLanguageFingerprint: "design-v1" });
   assert.equal(manifest.schemaVersion, "2.0.0");
+  assert.equal(manifest.renderer.environment.platform, process.platform);
+  assert.match(manifest.renderer.fingerprint, /^[a-f0-9]{64}$/);
+  const originalGpuMode = process.env.PRODUCER_BROWSER_GPU_MODE;
+  try {
+    process.env.PRODUCER_BROWSER_GPU_MODE = "software-regression";
+    const envChanged = deriveRenderManifest(jobRoot, { baselineManifest: manifest, designLanguageFingerprint: "design-v1" });
+    assert.notEqual(envChanged.renderer.fingerprint, manifest.renderer.fingerprint);
+    assert.ok(envChanged.chunks.every((chunk, index) => chunk.cacheKey !== manifest.chunks[index].cacheKey));
+    assert.equal(envChanged.renderer.environment.rendererEnvironment.PRODUCER_BROWSER_GPU_MODE, "software-regression");
+  } finally {
+    if (originalGpuMode === undefined) delete process.env.PRODUCER_BROWSER_GPU_MODE;
+    else process.env.PRODUCER_BROWSER_GPU_MODE = originalGpuMode;
+  }
   assert.ok(manifest.beats.every((beat) => beat.window && beat.fingerprint));
   assert.ok(manifest.captions.every((cue) => cue.window && cue.fingerprint));
   assert.ok(manifest.chunks.every((chunk) => /^[a-f0-9]{64}$/.test(chunk.cacheKey)));
@@ -486,7 +501,8 @@ try {
     totalFrames: receiptProbe.actualFrames,
     fps: 30,
     width: receiptProbe.width,
-    height: receiptProbe.height
+    height: receiptProbe.height,
+    duration: receiptProbe.duration
   });
   writeJsonAtomic(`${outputPath}.render.json`, {
     schemaVersion: "2.0.0",
@@ -539,7 +555,7 @@ const output = process.argv[process.argv.indexOf("--output") + 1];
 fs.appendFileSync(${JSON.stringify(renderLogPath)}, "render\\n");
 const result = spawnSync("ffmpeg", [
   "-v", "error", "-f", "lavfi", "-i", "color=black:s=160x284:r=30:d=30",
-  "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo:d=30.1",
+  "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo:d=" + (process.env.CUT_MOTION_TEST_BAD_AUDIO ? "30.1" : "30"),
   "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", output
 ], { stdio: "inherit" });
 process.exit(result.status ?? 1);
@@ -552,11 +568,22 @@ process.exit(result.status ?? 1);
   assert.equal(fs.readFileSync(renderLogPath, "utf8").trim().split("\n").length, 1);
   assert.equal(defaultRender.receipt.mode, "monolithic");
   assert.equal(verifyAssemblyReceipt(jobRoot, "previews/default.mp4", { quality: "standard" }).mode, "monolithic");
+  assert.equal(renderOutput(jobRoot, "standard", defaultOutput).reused, true);
+  assert.equal(fs.readFileSync(renderLogPath, "utf8").trim().split("\n").length, 1, "identical verified output does not rerender");
+  assert.deepEqual(defaultRender.receipt.rendererEnvironment, defaultRender.manifest.renderer.environment);
 
   const reviewHighOutput = path.join(jobRoot, "output/review-high.mp4");
   const reviewHighRender = renderOutput(jobRoot, "high", reviewHighOutput);
   assert.equal(reviewHighRender.receipt.mode, "monolithic");
   assert.equal(verifyAssemblyReceipt(jobRoot, "output/review-high.mp4", { quality: "high" }).mode, "monolithic");
+  const finalPath = write("output/final.mp4", "last-known-good");
+  const beforeRejectedRender = fs.readFileSync(renderLogPath, "utf8");
+  assert.throws(() => renderOutput(jobRoot, "high", finalPath), /existing final.mp4 must be preserved/);
+  assert.equal(fs.readFileSync(finalPath, "utf8"), "last-known-good");
+  assert.equal(fs.readFileSync(renderLogPath, "utf8"), beforeRejectedRender, "protected delivery is rejected before rendering");
+  const revision = renderOutput(jobRoot, "high", path.join(jobRoot, "output/final.candidate.mp4"));
+  assert.equal(revision.receipt.mode, "monolithic");
+  assert.equal(fs.readFileSync(finalPath, "utf8"), "last-known-good");
 
   const auditWorkflow = readJson(path.join(jobRoot, "state/workflow.json"));
   auditWorkflow.mode = "auto";
@@ -565,6 +592,58 @@ process.exit(result.status ?? 1);
   const auditRender = renderOutput(jobRoot, "standard", auditOutput);
   assert.equal(auditRender.receipt.mode, "monolithic");
   assert.equal(verifyAssemblyReceipt(jobRoot, "previews/audit.mp4", { quality: "standard" }).mode, "monolithic");
+
+  process.env.CUT_MOTION_TEST_BAD_AUDIO = "true";
+  try {
+    const rejectedOutput = path.join(jobRoot, "output/bad-duration.mp4");
+    assert.throws(() => renderOutput(jobRoot, "high", rejectedOutput), /duration differs/);
+    assert.equal(fs.existsSync(rejectedOutput), false, "bad output is never promoted");
+    assert.equal(fs.readFileSync(finalPath, "utf8"), "last-known-good");
+  } finally {
+    delete process.env.CUT_MOTION_TEST_BAD_AUDIO;
+  }
+
+  const sourceRender = spawnSync("ffmpeg", ["-y", "-v", "error",
+    "-f", "lavfi", "-i", "color=black:s=160x284:r=30:d=2",
+    "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo:d=2",
+    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", mediaPath
+  ], { encoding: "utf8" });
+  assert.equal(sourceRender.status, 0, sourceRender.stderr);
+  const musicPath = path.join(jobRoot, "hyperframes/assets/music.wav");
+  const musicRender = spawnSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", musicPath], { encoding: "utf8" });
+  assert.equal(musicRender.status, 0, musicRender.stderr);
+  writeJson("state/beat-map.json", { fps: 30, duration: 2, beats: [] });
+  auditWorkflow.authoritativeMediaSha256 = sha256File(mediaPath);
+  writeJson("state/workflow.json", auditWorkflow);
+  const mixedTemplate = fs.readFileSync(path.join(jobRoot, "hyperframes/index.template.html"), "utf8")
+    .replace('<audio id="source-audio" src="./assets/a-roll.mp4"></audio>',
+      '<audio id="source-audio" src="./assets/a-roll.mp4" data-start="0" data-duration="__CUT_MOTION_DURATION__" data-media-start="0" data-volume="1"></audio>')
+    + '<audio src="./assets/music.wav" data-render-audio="post-mix" data-start="0.5" data-duration="1" data-volume="0.3" data-fade-out-start="0.9" data-fade-out-duration="0.6"></audio>';
+  write("hyperframes/index.template.html", mixedTemplate);
+  const mixedManifest = deriveRenderManifest(jobRoot);
+  assert.equal(singlePassAudioSupported(jobRoot, mixedManifest), true);
+  assert.equal(resolvePostMixAudioTags(jobRoot)[0].sourcePath, fs.realpathSync(musicPath));
+  write("hyperframes/index.template.html", mixedTemplate.replace('data-fade-out-duration="0.6"', 'data-fade-out-duration="-0.6"'));
+  assert.equal(singlePassAudioSupported(jobRoot, mixedManifest), false);
+  assert.throws(() => resolvePostMixAudioTags(jobRoot), /Invalid post-mix/);
+  write("hyperframes/index.template.html", mixedTemplate);
+  const mixedOutput = path.join(jobRoot, "output/mixed.candidate.mp4");
+  const mixedRender = renderOutput(jobRoot, "high", mixedOutput, { mode: "chunked" });
+  assert.equal(mixedRender.mode, "chunked");
+  assert.equal(mixedRender.renderedChunks, 1);
+  assert.equal(mixedRender.receipt.totalFrames, 60);
+  assert.equal(verifyAssemblyReceipt(jobRoot, "output/mixed.candidate.mp4", { quality: "high" }).mode, "chunked");
+  const volume = spawnSync("ffmpeg", ["-i", mixedOutput, "-vn", "-af", "volumedetect", "-f", "null", "-"], { encoding: "utf8" });
+  assert.equal(volume.status, 0, volume.stderr);
+  assert.ok(Number(/max_volume:\s*(-?[0-9.]+) dB/.exec(volume.stderr)?.[1]) > -60, "post-mix tone is audible over silent A-roll");
+  const cacheReuse = renderOutput(jobRoot, "high", path.join(jobRoot, "output/mixed-again.mp4"), { mode: "chunked" });
+  assert.equal(cacheReuse.renderedChunks, 0);
+  assert.equal(cacheReuse.reusedChunks, 1);
+  assert.equal(renderOutput(jobRoot, "high", mixedOutput, { mode: "chunked" }).reused, true);
+  const environmentReceipt = readJson(`${mixedOutput}.render.json`);
+  environmentReceipt.rendererFingerprint = "0".repeat(64);
+  writeJsonAtomic(`${mixedOutput}.render.json`, environmentReceipt);
+  assert.throws(() => verifyAssemblyReceipt(jobRoot, "output/mixed.candidate.mp4"), /renderer environment is stale/);
 
   console.log("Render core tests passed");
 } finally {

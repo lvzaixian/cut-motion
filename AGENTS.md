@@ -4,6 +4,12 @@ cut-motion turns a talking-head video and an optional reference script into a ti
 
 `AGENTS.md` is the canonical operating contract. Codex, Claude Code, and compatible coding agents must follow it before editing media or authoring motion.
 
+## Maintained local workflow
+
+This branch integrates upstream `41baefbbd43c76a3a27a88e72962c4fd513942e5` with the complete local editorial and delivery protocol. The preserved pre-update baseline is `db84840` on `local-workflow/pre-upstream-20261006`. Read [the integration guide](docs/upstream-integration.md) when maintaining the workflow. Do not replace these contracts with upstream defaults or bulk-regenerate existing jobs.
+
+On resume, inspect the active workflow state and use [the phase router](docs/workflow.md#active-state-route) to avoid repeating completed work. New productions still read every required intake standard. Unified planning and template assembly derive mechanical artifacts from one editorial input; they never replace recording review, the last complete take, the four user decisions, the locked source frame grid or final title delivery.
+
 ## Existing local transcription — check this first
 
 **This Mac already has a reusable local `mlx-whisper` environment and Whisper large-v3 model.** Before declaring transcription unavailable or proposing an installation, read the first section of `docs/agent-setup.md` and check its absolute CLI/model paths, Metal and FFmpeg. The package is `mlx-whisper`; the executable is `mlx_whisper` inside a separate virtual environment. A missing command on PATH, a missing package in the default Python, or disconnected ChatCut is not evidence that this local tool is unavailable. When the user has not chosen an engine and the local checks pass, reuse it offline without reinstalling or downloading; keep new inputs, raw results and logs in the current job. Verify again on other hosts; do not assume this Mac's paths exist there.
@@ -41,6 +47,10 @@ jobs/<job-id>/
 │   ├── creative-confirmation.json
 │   ├── workflow.json
 │   ├── beat-map.json
+│   ├── planning-inputs.json  # new unified plans only
+│   ├── chatcut-main-timeline.json
+│   ├── timeline-source-windows.json
+│   ├── mg-speech-timing.json
 │   └── render-manifest.json
 ├── roughcut/
 │   └── a-roll.mp4
@@ -209,7 +219,7 @@ ChatCut is used only to create the editable rough cut. If it is unavailable, rec
 6. In `review`, record deferred caption and axis recommendations with `set-caption-mode` and `set-axis-mode`, open the ChatCut project in the Codex in-app browser, and stop at the editable rough-cut gate. Do not export or run automatic seam repair before the user decides.
 7. If the user requests a revision, revise the ChatCut timeline and reopen the same browser review. If the user approves, record the manual approval and export once to `roughcut/a-roll.mp4`; perform only the basic media probe and lock.
 8. In `auto`, warn that automatic export, three-threshold checking, and repair may take a long time, then resolve `rough-cut-review` with the automatic fallback on the same state path.
-9. Promote the approved export with `scripts/promote-job-media.mjs <job> roughcut <export> --consume-source` before advancing `rough-cut-export`. It atomically replaces `roughcut/a-roll.mp4` and refreshes the HyperFrames input through a hard link when possible.
+9. Promote the approved export with `scripts/promote-job-media.mjs <job> roughcut <export>` before advancing `rough-cut-export`. It preserves the export copy, atomically replaces `roughcut/a-roll.mp4` and refreshes the HyperFrames input through a hard link when possible. Never use `--consume-source` in this workspace.
 10. For `subtitles`, retain any ChatCut timing output only as raw alignment evidence; released captions are authored and installed in HyperFrames. Released wording comes from the persisted reference script when supplied, otherwise from the reconciled recording transcript.
 
 The shared baseline for both caption modes is: protected regions take precedence over decoration; protect any active caption, PiP, product evidence, protected or necessary UI, and platform chrome. The speaker is a trust and connection carrier, not a default protected zone: place MG for the viewer's current cognitive need and feed-scale visibility, not mechanically at the top or bottom to avoid the face. Intentional face coverage is allowed only when it improves the current semantic understanding and preserves one dominant focal group. Check text wrapping, entrance/peak/hold/exit bounds at real feed scale, and audio continuity before adding decorative motion. Caption mode changes only how speech is represented and how much motion is appropriate, not the rough-cut, source-lock, safe-area, or HyperFrames validation discipline.

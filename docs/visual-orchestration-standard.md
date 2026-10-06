@@ -184,12 +184,12 @@ rough-cut-export → motion-plan → visual-arrangement-review → composition �
 
 计划中的 cue 不能只写在 JSON：
 
-1. 构建器把当前 Beat 的命名 cue 注入一个受控 `motion` 调度器；模块只能以 `motion.set()` / `motion.to()` 和 cue ID 排定内容性动作，不能再以 `beat.start + 常数` 作为内容时序；
+1. 构建器把当前 Beat 的命名 cue 注入一个受控 `motion` 调度器；模块只能为每个 cue 调用一次 `motion.reveal("cue-id", options)` 排定内容性动作，不能再以 `beat.start + 常数` 作为内容时序；
 2. 模块只控制带 `data-cue-id` 的子对象，根节点的显示与最终退出由构建器统一控制；模块自行提前淡出根节点是阻断错误；
 3. 构建与校验必须证明：每个声明 cue 都在实际时间线被使用，实际退出未早于声明对象的 `invisibleFrame`，且不存在未声明的内容性时间点；
 4. 抽帧点从实际 cue 取得：入场、首次可读、落定/停留、退出。仅从 Beat 大窗口抽样不构成验证。
 
-这里不引入通用 JavaScript 解析器。最小实现是由构建器提供 `at("cue-id", "phase")` 与受控 `motion` 调度器，静态拒绝新 profile 模块中裸露的 `timeline`、`root` 和 `beat` 调度；再用小型真实回归覆盖提前淡出、错词触发与漏用 cue。未声明该 profile 的历史模块继续按旧契约重建。
+这里不引入通用 JavaScript 解析器。最小实现是由构建器提供 `motion.reveal` 与受控 cue 调度器，静态拒绝新 profile 模块中裸露的 `timeline`、`root` 和 `beat` 调度；再用小型真实回归覆盖提前淡出、错词触发与漏用 cue。未声明该 profile 的历史模块继续按旧契约重建。
 
 ## 6. 口播的编辑型动效语法
 

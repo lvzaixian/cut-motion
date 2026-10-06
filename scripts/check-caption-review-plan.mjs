@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { sha256File } from "./workflow-utils.mjs";
-import { resolveCaptionCues } from "./caption-review-utils.mjs";
+import { normalizeCaptionText as normalize, resolveCaptionCues } from "./caption-review-utils.mjs";
 
 const [planPathArgument] = process.argv.slice(2);
 if (!planPathArgument) {
@@ -18,8 +18,6 @@ const referenceText = transcript.segments.map((segment) => segment.text).join(""
 const lexicon = JSON.parse(fs.readFileSync(path.join(jobDirectory, "captions", "caption-lexicon.json"), "utf8"));
 const errors = [];
 const warnings = [];
-const ignored = /[\s，。；：！？、,.!?;:'"“”‘’（）()《》〈〉—–\-]/u;
-const normalize = (value) => [...value.normalize("NFKC").toLowerCase()].filter((character) => !ignored.test(character)).join("");
 const displayUnits = (value) => [...value.normalize("NFKC")].reduce((sum, character) => {
   if (/\s/.test(character)) return sum + 0.25;
   if (/[\u0000-\u007f]/.test(character)) return sum + 0.55;
@@ -42,19 +40,38 @@ if (plan.rules?.minimumDurationSeconds !== 0.5
   errors.push("caption plan cannot relax the binding duration or width limits");
 }
 if (!Array.isArray(plan.cues) || plan.cues.length === 0) errors.push("caption review plan has no cues");
-if (normalize(plan.cues.map((cue) => cue.text).join("")) !== normalize(referenceText)) {
+if (normalize((plan.cues ?? []).map((cue) => cue.text).join("")) !== normalize(referenceText)) {
   errors.push("caption cues do not preserve the approved reference transcript");
 }
 
 let resolvedCues = [];
+const manualSegmentRanges = Array.isArray(plan.cues) && plan.cues.some((cue) => cue.segmentId !== undefined);
 try {
   resolvedCues = resolveCaptionCues(plan, transcript);
 } catch (error) {
   errors.push(error.message);
 }
 const totalWordCount = (transcript.segments ?? []).reduce((sum, segment) => sum + (segment.words?.length ?? 0), 0);
-if (resolvedCues.length > 0 && resolvedCues.at(-1).endWordIndex !== totalWordCount - 1) {
-  errors.push("caption word ranges do not cover the complete transcript");
+if (resolvedCues.length > 0) {
+  if (manualSegmentRanges) {
+    const actualSegmentIds = [...new Set(resolvedCues.map((cue) => cue.segmentId))];
+    const expectedSegmentIds = (transcript.segments ?? []).map((segment) => segment.id);
+    if (actualSegmentIds.length !== expectedSegmentIds.length || actualSegmentIds.some((id, index) => id !== expectedSegmentIds[index])) {
+      errors.push("manual caption cues must cover each transcript segment in order");
+    }
+    for (const segment of transcript.segments ?? []) {
+      const text = resolvedCues.filter((cue) => cue.segmentId === segment.id).map((cue) => cue.text).join("");
+      if (normalize(text) !== normalize(segment.text)) errors.push(`${segment.id}: manual caption cues do not preserve the full transcript text`);
+    }
+  } else {
+    const startsAtFirstWord = resolvedCues[0].startWordIndex === 0;
+    const endsAtLastWord = resolvedCues.at(-1).endWordIndex === totalWordCount - 1;
+    const contiguous = resolvedCues.every((cue, index) => index === 0
+      || cue.startWordIndex === resolvedCues[index - 1].endWordIndex + 1);
+    if (!startsAtFirstWord || !endsAtLastWord || !contiguous) {
+      errors.push("caption word ranges do not cover the complete transcript");
+    }
+  }
 }
 
 let previousEnd = -Infinity;
@@ -74,7 +91,7 @@ for (const [index, cue] of resolvedCues.entries()) {
   if (cue.start < previousEnd - 0.001) errors.push(`${cue.id}: cues overlap`);
   const duration = cue.end - cue.start;
   if (duration < plan.rules.minimumDurationSeconds) errors.push(`${cue.id}: duration ${duration.toFixed(2)}s is below ${plan.rules.minimumDurationSeconds}s`);
-  if (duration > plan.rules.targetDurationSeconds[1] + 0.05) warnings.push(`${cue.id}: duration ${duration.toFixed(2)}s exceeds target`);
+  if (duration > plan.rules?.targetDurationSeconds?.[1] + 0.05) warnings.push(`${cue.id}: duration ${duration.toFixed(2)}s exceeds target`);
   const units = displayUnits(cue.text);
   if (units > plan.rules.maximumDisplayUnits) errors.push(`${cue.id}: ${units.toFixed(2)} display units exceed ${plan.rules.maximumDisplayUnits}`);
   const shortException = plan.exceptions?.[cue.id];
@@ -83,7 +100,7 @@ for (const [index, cue] of resolvedCues.entries()) {
   }
   if (units > 10.5 && !(cue.fitFontSizePx >= 88 && cue.fitFontSizePx <= 96)) errors.push(`${cue.id}: long cue requires fitFontSizePx between 88 and 96`);
   const fixedForbidden = ["的", "了", "着", "过", "啊", "吧", "吗", "呢", "与", "和", "但", "所以", "因为", "而"];
-  if (fixedForbidden.includes(normalizedText) || plan.rules.forbiddenStandaloneCues.includes(normalizedText)) errors.push(`${cue.id}: function word cannot stand alone`);
+  if (fixedForbidden.includes(normalizedText) || (plan.rules?.forbiddenStandaloneCues ?? []).includes(normalizedText)) errors.push(`${cue.id}: function word cannot stand alone`);
   const endsWithQuestion = /[?？]$/u.test(cue.text);
   const punctuationBody = endsWithQuestion ? cue.text.slice(0, -1) : cue.text;
   if (/[，。；：！!、,.!?;:'"“”‘’（）()《》〈〉—–\-]/u.test(punctuationBody)) {
@@ -95,8 +112,9 @@ for (const [index, cue] of resolvedCues.entries()) {
   previousEnd = cue.end;
 }
 const fullText = normalize(referenceText);
-for (const term of plan.rules.protectedTerms ?? []) {
+for (const term of plan.rules?.protectedTerms ?? []) {
   const normalizedTerm = normalize(term);
+  if (!normalizedTerm) { errors.push("protected terms must not be empty"); continue; }
   let offset = fullText.indexOf(normalizedTerm);
   if (offset < 0) errors.push(`protected term is not present in the approved transcript: ${term}`);
   while (offset >= 0) {
@@ -111,4 +129,4 @@ for (const term of plan.rules.protectedTerms ?? []) {
 for (const warning of warnings) console.warn(`Warning: ${warning}`);
 for (const error of errors) console.error(`Error: ${error}`);
 if (errors.length > 0) process.exit(1);
-console.log(`Caption review plan passed: ${plan.cues.length} semantic cue(s), ${warnings.length} warning(s)`);
+console.log(`Caption review plan passed: ${plan.cues.length} semantic cue(s)`);

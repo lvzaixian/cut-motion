@@ -513,7 +513,7 @@ try {
     "approve-visual-arrangement",
     "--actor", "user",
     "--note", "Material drift must block composition"
-  ], /materials\[0\]\.sha256/);
+  ], /Creative authority drift: material:fixture-evidence/);
 
   const legacyTranscriptResolutionJob = path.join(temporaryRoot, "legacy-transcript-resolution");
   fs.cpSync(jobRoot, legacyTranscriptResolutionJob, { recursive: true });
@@ -914,6 +914,22 @@ try {
   assert.equal(visualReviewWorkflow.gates["visual-arrangement-review"].artifact, "docs/creative-confirmation.md");
   assert.equal(visualReviewWorkflow.history.at(-1).artifact, "docs/creative-confirmation.md");
   fail("workflow-state.mjs", [workflowPath, "advance", "--artifact", "hyperframes/index.html"], /visual arrangement review requires/i);
+  const pendingFiles = ["state/workflow.json", "state/beat-map.json", "state/creative-confirmation.json", "captions/caption-review-plan.json", "docs/creative-confirmation.md"];
+  const pendingBytes = new Map(pendingFiles.map(relative => [relative, fs.readFileSync(path.join(jobRoot, relative))]));
+  const validChangedPlan = readJson(path.join(jobRoot, "state", "beat-map.json"));
+  validChangedPlan.beats.find(beat => beat.mgScope === "none").noMgReason += " Preserve the existing spoken explanation.";
+  writeJson(path.join(jobRoot, "state", "beat-map.json"), validChangedPlan);
+  run("check-visual-plan.mjs", [path.join(jobRoot, "state", "beat-map.json"), transcriptPath, path.join(jobRoot, "state", "design-system.json"), workflowPath]);
+  fail("workflow-state.mjs", [workflowPath, "approve-visual-arrangement", "--actor", "user", "--note", "Reject a changed but valid plan"], /Creative authority drift: beatMap/);
+  for (const relative of pendingFiles.filter(relative => relative !== "state/beat-map.json")) {
+    assert.deepEqual(fs.readFileSync(path.join(jobRoot, relative)), pendingBytes.get(relative), "rejected approval must not rebind or regenerate the package");
+  }
+  fs.writeFileSync(path.join(jobRoot, "state", "beat-map.json"), pendingBytes.get("state/beat-map.json"));
+  const pendingHtml = fs.readFileSync(path.join(jobRoot, "hyperframes", "index.html"));
+  run("compose-job.mjs", [jobRoot]);
+  assert.deepEqual(fs.readFileSync(path.join(jobRoot, "hyperframes", "index.html")), pendingHtml, "compose must stop before assembling a pending package");
+  assert.equal(fs.existsSync(path.join(jobRoot, "state", "mg-assembly.json")), false);
+
   fail("workflow-state.mjs", [workflowPath, "approve-visual-arrangement", "--actor", "agent", "--note", "Agent cannot approve this review"], /requires actor user/i);
   fail("workflow-state.mjs", [workflowPath, "approve-visual-arrangement", "--note", "Do not infer a user actor"], /requires actor user/i);
   fail("workflow-state.mjs", [workflowPath, "revise-visual-arrangement", "--note", "Do not infer a user actor"], /requires actor user/i);
@@ -941,6 +957,10 @@ try {
   visualReviewWorkflow = readJson(workflowPath);
   assert.equal(visualReviewWorkflow.currentState, "composition");
   assert.equal(visualReviewWorkflow.visualArrangementReviewDecision, "manual-approved");
+  const approvedHtml = fs.readFileSync(path.join(jobRoot, "hyperframes", "index.html"));
+  fail("compose-job.mjs", [jobRoot], /rough-cut media|ENOENT|not bound/i);
+  assert.deepEqual(fs.readFileSync(path.join(jobRoot, "hyperframes", "index.html")), approvedHtml);
+
 
   run("workflow-state.mjs", [workflowPath, "replan", "--actor", "agent", "--note", "Retest the automatic visual acceptance path"]);
   run("workflow-state.mjs", [

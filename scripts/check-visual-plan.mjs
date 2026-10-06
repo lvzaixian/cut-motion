@@ -4,6 +4,8 @@ import { durationToFrames, quantizeFrameWindow } from "./frame-window-utils.mjs"
 import { THOUGHTFUL_EDITORIAL_PROFILE, resolveBeatRenderWindow, transcriptWordsById } from "./motion-window-utils.mjs";
 import { isVisualOrchestrationActive, isVisualOrchestrationV2 } from "./visual-orchestration-version.mjs";
 import { assertRegularContainedFile, isPathInside, sha256File } from "./workflow-utils.mjs";
+import { resolveComponent } from "./motion-template-library.mjs";
+import { loadSpeechTiming, resolveRevealTimes } from "./mg-speech-timing.mjs";
 
 const [beatMapPath, transcriptPath, designSystemPath, workflowPathArgument] = process.argv.slice(2);
 
@@ -49,12 +51,16 @@ const visualOrchestrationActive = isVisualOrchestrationActive(beatMap);
 const visualOrchestrationV2 = isVisualOrchestrationV2(beatMap);
 const visualArrangementReviewRequired = visualOrchestrationActive && workflow?.visualArrangementReviewRequired === true;
 const jobRoot = path.resolve(path.dirname(beatMapPath), "..");
+let speechTiming = null;
+if (beats.some(beat => beat.templateData?.revealCues)) {
+  try { speechTiming = loadSpeechTiming(jobRoot, beatMap.fps); } catch (error) { errors.push(error.message); }
+}
 const inputRoot = path.join(jobRoot, "input");
 const materialById = new Map();
 const thoughtfulEditorialTiming = designSystem.motionProfiles?.[THOUGHTFUL_EDITORIAL_PROFILE]?.cueTiming;
 const thoughtfulEditorialSurface = designSystem.motionProfiles?.[THOUGHTFUL_EDITORIAL_PROFILE]?.aAxis;
 const thoughtfulHoldKinds = new Set(["standard", "evidence-reading", "causal-sequence", "rhetorical-pause"]);
-const frameAtOrAfter = (seconds, fps) => Math.ceil(Number(seconds) * fps - 1e-6);
+const frameAtOrAfter = (seconds, fps) => durationToFrames(Number(seconds), fps);
 const thoughtfulFrameLimit = (field) => {
   if (thoughtfulEditorialTiming?.referenceFps !== 60) return null;
   const value = thoughtfulEditorialTiming[field];
@@ -122,6 +128,7 @@ if (subtitleMgCadenceActive) {
 
 for (let index = 0; index < beats.length; index += 1) {
   const beat = beats[index];
+  const component = resolveComponent(beat.templateId ?? beat.mgComponent);
   const duration = beat.end - beat.start;
   const thoughtfulEditorialBeat = beat.motionProfile === THOUGHTFUL_EDITORIAL_PROFILE;
 
@@ -141,9 +148,10 @@ for (let index = 0; index < beats.length; index += 1) {
     if (normalize(sourceText) !== normalize(beat.text)) errors.push(`${beat.id}: displayed copy does not exactly cover its transcript segments`);
   }
 
-  if (captionMode === "subtitles" && sourceSegments.every(Boolean) && !beat.copyException) {
+  if (captionMode === "subtitles" && beat.mgScope === "local" && sourceSegments.every(Boolean) && !beat.copyException) {
     const sourceText = sourceSegments.map((segment) => segment.text).join("");
-    if (normalize(sourceText) === normalize(beat.text)) errors.push(`${beat.id}: subtitles mode motion must add information instead of duplicating caption copy`);
+    const visibleCopy = component ? (beat.templateData?.copy ?? beat.onScreenCopy ?? []).join("") : beat.text;
+    if (normalize(sourceText) === normalize(visibleCopy)) errors.push(`${beat.id}: subtitles mode motion must add information instead of duplicating caption copy`);
   }
 
   if (sourceSegments.every(Boolean) && !beat.syncException) {
@@ -441,7 +449,7 @@ for (let index = 0; index < beats.length; index += 1) {
   }
   if (!["horizontal", "vertical"].includes(beat.primaryFlowAxis)) errors.push(`${beat.id}: motion beat must declare a horizontal or vertical primaryFlowAxis`);
   if (typeof beat.visualReference !== "string" || beat.visualReference.trim().length === 0) errors.push(`${beat.id}: motion beat must declare its approved or proposed visualReference`);
-  if (!["sequence", "comparison", "convergence", "branch", "mapping", "emphasis", "evidence"].includes(beat.semanticTopology)) errors.push(`${beat.id}: motion beat must declare semanticTopology`);
+  if (component ? beat.semanticTopology !== component.meta.semanticTopology : !["sequence", "comparison", "convergence", "branch", "mapping", "emphasis", "evidence"].includes(beat.semanticTopology)) errors.push(`${beat.id}: motion beat must declare semanticTopology`);
   const entryWord = wordsById.get(beat.entryAnchorWordId);
   const exitWord = wordsById.get(beat.exitAnchorWordId);
   if (!entryWord) errors.push(`${beat.id}: entryAnchorWordId does not resolve to a transcript word`);
@@ -454,6 +462,13 @@ for (let index = 0; index < beats.length; index += 1) {
     try {
       renderWindow = resolveBeatRenderWindow(beat, beatMap, wordsById);
       renderWindows.set(beat.id, renderWindow);
+      if (beat.templateData?.revealCues && speechTiming) {
+        const reveals = resolveRevealTimes(beat, renderWindow, speechTiming);
+        if (thoughtfulEditorialBeat && (reveals.length !== beat.objectCues.length
+          || reveals.some((at, cueIndex) => beat.objectCues[cueIndex].firstLegibleFrame !== Math.round((at + renderWindow.start) * beatMap.fps)))) {
+          errors.push(`${beat.id}: controlled object cues differ from measured speech reveals; regenerate and review the plan`);
+        }
+      }
       if (exitWord.end < entryWord.start) errors.push(`${beat.id}: exit anchor precedes entry anchor`);
       if (renderWindow.exitAnchorTime > beat.end + 1 / beatMap.fps) errors.push(`${beat.id}: exit anchor extends beyond the Beat window`);
       const lastMicroEvent = Math.max(beat.start, ...(beat.microEvents ?? []).map((event) => event.time));
@@ -464,6 +479,10 @@ for (let index = 0; index < beats.length; index += 1) {
   }
   if (captionMode === "subtitles" && beat.mgScope !== "local") errors.push(`${beat.id}: subtitles mode only permits local MG`);
   if (captionMode === "subtitles" && beat.captionSafeZonePass !== true) errors.push(`${beat.id}: local MG must pass caption safe-zone review`);
+  if (component) {
+    if (beat.templateData?.copy && JSON.stringify(beat.onScreenCopy) !== JSON.stringify(beat.templateData.copy)) errors.push(`${beat.id}: onScreenCopy must match templateData.copy`);
+    try { component.render({ beat: { ...beat, fps: beatMap.fps } }); } catch (error) { errors.push(error.message); }
+  }
   if (captionMode === "subtitles") {
     if (subtitleMgCadenceActive) {
       if (!['center', 'side'].includes(beat.layout.focalPlacement)) errors.push(`${beat.id}: local MG must declare focal placement center or side`);
@@ -474,7 +493,7 @@ for (let index = 0; index < beats.length; index += 1) {
     }
     if (!Array.isArray(beat.captionCueIds) || beat.captionCueIds.length === 0) errors.push(`${beat.id}: subtitle MG must map to captionCueIds`);
     if (typeof beat.visualStyle !== "string" || beat.visualStyle.trim().length === 0) errors.push(`${beat.id}: subtitle MG must declare visualStyle`);
-    if (!Array.isArray(beat.onScreenCopy) || beat.onScreenCopy.length === 0 || beat.onScreenCopy.length > 6) {
+    if (!Array.isArray(beat.onScreenCopy) || (!component && (beat.onScreenCopy.length === 0 || beat.onScreenCopy.length > 6))) {
       errors.push(`${beat.id}: subtitle MG must declare 1–6 exact onScreenCopy strings`);
     } else {
       for (const [copyIndex, copy] of beat.onScreenCopy.entries()) {
@@ -483,7 +502,7 @@ for (let index = 0; index < beats.length; index += 1) {
           continue;
         }
         const visibleCharacters = [...copy.replace(/[\s·/｜|→↔+\-]/g, "")].length;
-        if (visibleCharacters > 12) errors.push(`${beat.id}: onScreenCopy[${copyIndex}] exceeds 12 visible characters`);
+        if (!component && visibleCharacters > 12) errors.push(`${beat.id}: onScreenCopy[${copyIndex}] exceeds 12 visible characters`);
       }
     }
     for (const field of ["viewerQuestion", "removalLoss", "visualEncoding", "stillFrameValue", "attentionCost"]) {
